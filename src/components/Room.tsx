@@ -1,4 +1,6 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent } from 'react';
+import { getHostSource, hostFile, hostTab, stopHosting, useHostSource } from '../lib/hostStream.ts';
+import { canShareTab, canStreamFile } from '../lib/rtc.ts';
 import type { Member, RoomState } from '../../shared/protocol.ts';
 import { hasEnded, positionAt } from '../../shared/protocol.ts';
 import { serverNow, socket } from '../lib/socket.ts';
@@ -48,6 +50,14 @@ export function Room({ room, you, connected, theme, onTheme, onLeave }: Props) {
   const now = useNow(250);
   const isHost = room.hostId === you;
   const position = positionAt(room, now);
+
+  // Stop publishing as soon as the room moves on to something else.
+  const mediaKey = JSON.stringify(room.media);
+  useEffect(() => {
+    const mine = room.media?.kind === 'stream' && room.media.publisherId === you;
+    if (!mine && getHostSource()) stopHosting();
+    // mediaKey stands in for room.media so unrelated room updates don't re-run this.
+  }, [mediaKey, you]);
   const effectivePlaying = room.playback.playing && room.holdFor.length === 0;
   const memberName = (id: string) => room.members.find((m) => m.id === id)?.name ?? 'Seseorang';
 
@@ -176,7 +186,9 @@ function PlayerCard({ room, you, position, effectivePlaying, lag, behind, member
     if (e.key === 'Escape' && pseudoFs) setPseudoFs(false);
   };
 
-  const hasMedia = room.media !== null;
+  // A shared tab is controlled from the tab itself, so the room clock has nothing to drive.
+  const isLive = room.media?.kind === 'stream' && room.media.source === 'tab';
+  const hasMedia = room.media !== null && !isLive;
   const waiting = room.holdFor.length > 0;
   const heldOnMe = room.holdFor.includes(you);
   const length = room.duration ?? duration;
@@ -208,6 +220,8 @@ function PlayerCard({ room, you, position, effectivePlaying, lag, behind, member
   } else if (behind.length > 0) {
     chipText = `${names(behind.map((m) => m.name))} lagi nyusul`;
     chipColor = 'var(--on-video-wait)';
+  } else if (isLive) {
+    chipText = 'Live';
   } else if (finished) {
     chipText = 'Selesai';
   } else if (!room.playback.playing) {
@@ -319,9 +333,13 @@ function PlayerCard({ room, you, position, effectivePlaying, lag, behind, member
           <button type="button" className="btn tabular" style={{ fontWeight: 700 }} disabled={!hasMedia} aria-label="Maju 10 detik" onClick={() => socket.emit('control:seek', { position: position + 10 })}>
             +10
           </button>
-          <span className="tabular">
-            {clock(shown)} <span className="muted">/ {length > 0 ? clock(length) : '--:--'}</span>
-          </span>
+          {isLive ? (
+            <span style={{ fontWeight: 700, color: 'var(--accent)' }}>Live dari tab host</span>
+          ) : (
+            <span className="tabular">
+              {clock(shown)} <span className="muted">/ {length > 0 ? clock(length) : '--:--'}</span>
+            </span>
+          )}
           <span style={{ flex: '1 1 auto' }} />
           {!effectivePlaying && hasMedia && !waiting && !finished && <span className="muted" style={{ fontSize: 14 }}>Di-pause</span>}
           <button type="button" className={fullscreen ? 'btn btn-primary' : 'btn'} onClick={toggleFullscreen} autoFocus={pseudoFs}>
@@ -394,10 +412,60 @@ function Convoy({ room, position, lag, behind }: { room: RoomState; position: nu
   );
 }
 
+type SourceTab = 'link' | 'file' | 'tab';
+
 function SourceCard({ room, isHost }: { room: RoomState; isHost: boolean }) {
+  const [tab, setTab] = useState<SourceTab>('link');
   const [link, setLink] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const local = useHostSource();
+  const sharingTab = local?.kind === 'tab' && room.media?.kind === 'stream' && room.media.source === 'tab';
+  const streamingFile = local?.kind === 'file' && room.media?.kind === 'stream' && room.media.source === 'file';
+
+  const pickTab = (t: SourceTab) => {
+    setTab(t);
+    setError('');
+  };
+
+  const announce = (source: 'file' | 'tab', title: string) =>
+    new Promise<boolean>((resolve) => {
+      socket.emit('media:set', { media: { kind: 'stream', source, title } }, (res) => {
+        if (!res.ok) setError(res.error);
+        resolve(res.ok);
+      });
+    });
+
+  const onFile = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    if (!/^(video|audio)\//.test(file.type)) {
+      setError('File ini bukan video atau audio.');
+      return;
+    }
+    setError('');
+    hostFile(file);
+    if (!(await announce('file', file.name))) stopHosting();
+  };
+
+  const startShare = async () => {
+    setError('');
+    setBusy(true);
+    try {
+      await hostTab(() => socket.emit('media:clear'));
+      if (!(await announce('tab', 'Tab yang di-share host'))) stopHosting();
+    } catch {
+      setError('Share tab dibatalkan atau ditolak browser.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const stopShare = () => {
+    stopHosting();
+    socket.emit('media:clear');
+  };
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -441,17 +509,75 @@ function SourceCard({ room, isHost }: { room: RoomState; isHost: boolean }) {
       </div>
 
       <div role="group" aria-label="Sumber video" style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-        <span className="btn" style={{ background: 'var(--ink)', color: 'var(--bg)', borderColor: 'var(--ink)', cursor: 'default' }}>
-          Link YouTube / URL
-        </span>
-        <button type="button" className="btn" disabled>
-          File dari PC (segera hadir)
-        </button>
-        <button type="button" className="btn" disabled>
-          Share tab (segera hadir)
-        </button>
+        {(
+          [
+            ['link', 'Link YouTube / URL'],
+            ['file', 'File dari PC'],
+            ['tab', 'Share tab'],
+          ] as const
+        ).map(([id, label]) => (
+          <button key={id} type="button" className={tab === id ? 'btn source-on' : 'btn'} aria-pressed={tab === id} onClick={() => pickTab(id)}>
+            {label}
+          </button>
+        ))}
       </div>
 
+      {tab === 'file' && (
+        <div className="source-panel">
+          <div style={{ flex: '1 1 220px' }}>
+            <div style={{ fontWeight: 700 }}>{streamingFile ? `Lagi di-stream: ${local.file.name}` : 'Putar film atau lagu dari PC kamu'}</div>
+            <div className="muted" style={{ fontSize: 14 }}>
+              {!isHost
+                ? 'Cuma host yang bisa streaming file.'
+                : !canStreamFile()
+                  ? 'Browser ini belum bisa streaming file. Coba Chrome atau Edge di PC.'
+                  : 'Dikirim langsung dari browser kamu ke temen, tanpa upload. Kualitasnya ngikut internet upload kamu, enaknya buat sampai 5 penonton.'}
+            </div>
+          </div>
+          {streamingFile ? (
+            <button type="button" className="btn" onClick={stopShare}>
+              Berhenti stream
+            </button>
+          ) : (
+            <label className={isHost && canStreamFile() ? 'btn btn-primary file-btn' : 'btn btn-primary file-btn is-disabled'}>
+              Pilih file
+              <input type="file" accept="video/*,audio/*" className="sr-only" disabled={!isHost || !canStreamFile()} onChange={onFile} />
+            </label>
+          )}
+        </div>
+      )}
+
+      {tab === 'tab' && (
+        <div className="source-panel">
+          <div style={{ flex: '1 1 220px' }}>
+            <div style={{ fontWeight: 700 }}>{sharingTab ? 'Lagi share tab' : 'Share tab browser'}</div>
+            <div className="muted" style={{ fontSize: 14 }}>
+              {!isHost
+                ? 'Cuma host yang bisa share tab.'
+                : !canShareTab()
+                  ? 'Share tab cuma bisa dari browser PC (Chrome, Edge, atau Firefox).'
+                  : 'Buat TikTok, live stream, atau situs lain. Pilih tab-nya, lalu centang "Bagikan audio tab" biar suaranya ikut. Pause dan loncat diatur dari tab itu sendiri.'}
+            </div>
+          </div>
+          {sharingTab ? (
+            <button type="button" className="btn" onClick={stopShare}>
+              Berhenti share
+            </button>
+          ) : (
+            <button type="button" className="btn btn-primary" disabled={!isHost || !canShareTab() || busy} onClick={startShare}>
+              {busy ? 'Milih tab…' : 'Mulai share'}
+            </button>
+          )}
+        </div>
+      )}
+
+      {tab !== 'link' && error && (
+        <span className="error-text" role="alert">
+          {error}
+        </span>
+      )}
+
+      {tab === 'link' && (
       <form onSubmit={submit} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         <label htmlFor="link" style={{ fontSize: 14, fontWeight: 700 }}>
           Link YouTube atau file
@@ -487,6 +613,7 @@ function SourceCard({ room, isHost }: { room: RoomState; isHost: boolean }) {
           )}
         </div>
       </form>
+      )}
     </section>
   );
 }

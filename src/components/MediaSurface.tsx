@@ -3,6 +3,8 @@ import type { Media, RoomState } from '../../shared/protocol.ts';
 import { positionAt } from '../../shared/protocol.ts';
 import { serverNow } from '../lib/socket.ts';
 import { isAudioUrl } from '../lib/media.ts';
+import { captureFrom, useHostSource } from '../lib/hostStream.ts';
+import { RemoteStream } from './RemoteStream.tsx';
 
 /** How far (seconds) a player may drift before we seek it back in line. */
 const SEEK_THRESHOLD_PLAYING = 0.75;
@@ -125,6 +127,9 @@ function htmlEngine(el: HTMLMediaElement, ev: EngineEvents): Engine {
   el.addEventListener('waiting', onWaiting);
   el.addEventListener('playing', onPlaying);
   el.addEventListener('canplay', onCanPlay);
+  // A cached or local file can already be playable before we attach; canplay won't fire again.
+  let alive = true;
+  if (isReady) setTimeout(() => alive && ev.onReady(), 0);
   return {
     ready: () => isReady,
     play: () => el.play(),
@@ -139,6 +144,7 @@ function htmlEngine(el: HTMLMediaElement, ev: EngineEvents): Engine {
       el.playbackRate = r;
     },
     destroy: () => {
+      alive = false;
       el.removeEventListener('waiting', onWaiting);
       el.removeEventListener('playing', onPlaying);
       el.removeEventListener('canplay', onCanPlay);
@@ -156,14 +162,59 @@ interface Props {
   onDuration(seconds: number): void;
 }
 
-export function MediaSurface({ media, room, you, onBuffering, onReady, onPosition, onDuration }: Props) {
+type PlayableMedia = Exclude<Media, { kind: 'stream' }>;
+
+export function MediaSurface(props: Props) {
+  const { media, you, room } = props;
+  const local = useHostSource();
+  if (media.kind !== 'stream') return <SyncedSurface {...props} media={media} />;
+
+  if (media.publisherId !== you) {
+    return <RemoteStream publisherId={media.publisherId} onPosition={() => props.onPosition(positionAt(room, serverNow()))} />;
+  }
+  if (media.source === 'tab' && local?.kind === 'tab') return <LocalPreview stream={local.stream} />;
+  if (media.source === 'file' && local?.kind === 'file') {
+    // The publisher plays the file like any synced URL; the captured output goes to the viewers.
+    return (
+      <SyncedSurface
+        {...props}
+        media={{ kind: 'url', url: local.url, title: media.title }}
+        onMediaReady={(el) => captureFrom(el as HTMLVideoElement)}
+      />
+    );
+  }
+  return (
+    <div className="video-empty">
+      <span className="display" style={{ fontSize: 22 }}>
+        Stream-nya putus
+      </span>
+      <p>Halaman sempat di-refresh, jadi file atau tab-nya hilang. Pilih lagi di bawah.</p>
+    </div>
+  );
+}
+
+function LocalPreview({ stream }: { stream: MediaStream }) {
+  const el = useRef<HTMLVideoElement>(null);
+  useEffect(() => {
+    if (el.current) el.current.srcObject = stream;
+  }, [stream]);
+  // Muted: the host already hears the shared tab itself.
+  return <video ref={el} autoPlay muted playsInline />;
+}
+
+interface SyncedProps extends Omit<Props, 'media'> {
+  media: PlayableMedia;
+  onMediaReady?(el: HTMLMediaElement): void;
+}
+
+function SyncedSurface({ media, room, you, onBuffering, onReady, onPosition, onDuration, onMediaReady }: SyncedProps) {
   const ytHost = useRef<HTMLDivElement>(null);
   const mediaEl = useRef<HTMLVideoElement & HTMLAudioElement>(null);
   const engine = useRef<Engine | null>(null);
   const roomRef = useRef(room);
   roomRef.current = room;
-  const cb = useRef({ onBuffering, onReady, onPosition, onDuration });
-  cb.current = { onBuffering, onReady, onPosition, onDuration };
+  const cb = useRef({ onBuffering, onReady, onPosition, onDuration, onMediaReady });
+  cb.current = { onBuffering, onReady, onPosition, onDuration, onMediaReady };
   const [needsTap, setNeedsTap] = useState(false);
 
   const mediaKey = media.kind === 'youtube' ? `yt:${media.videoId}` : `url:${media.url}`;
@@ -174,7 +225,10 @@ export function MediaSurface({ media, room, you, onBuffering, onReady, onPositio
     let playAttemptAt = 0;
 
     const events: EngineEvents = {
-      onReady: () => tick(),
+      onReady: () => {
+        if (mediaEl.current) cb.current.onMediaReady?.(mediaEl.current);
+        tick();
+      },
       onBuffering: (b) => {
         clearTimeout(timer);
         const pos = () => engine.current?.time() ?? 0;

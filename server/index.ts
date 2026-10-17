@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { Server, type Socket } from 'socket.io';
 import type { ClientToServer, Media, ServerToClient } from '../shared/protocol.ts';
 import {
-  addMember, createRoom, ended, getRoom, hold, pause, play, release, removeMember, say, seek,
+  addMember, clearMedia, createRoom, ended, getRoom, hold, pause, play, release, removeMember, say, seek,
   setDuration, setMedia, setMode, snapshot, sweepEmptyRooms, system, type Room,
 } from './rooms.ts';
 
@@ -34,10 +34,13 @@ function broadcast(room: Room): void {
   io.to(room.code).emit('room:state', snapshot(room));
 }
 
-function validMedia(media: unknown): Media | null {
+function validMedia(media: unknown, publisherId: string): Media | null {
   if (!media || typeof media !== 'object') return null;
   const m = media as Record<string, unknown>;
   const title = clean(m.title, 120) || 'Video';
+  if (m.kind === 'stream' && (m.source === 'file' || m.source === 'tab')) {
+    return { kind: 'stream', source: m.source, title, publisherId };
+  }
   if (m.kind === 'youtube' && typeof m.videoId === 'string' && /^[\w-]{6,20}$/.test(m.videoId)) {
     return { kind: 'youtube', videoId: m.videoId, title };
   }
@@ -107,7 +110,7 @@ io.on('connection', (socket: Socket<ClientToServer, ServerToClient>) => {
   socket.on('media:set', (p, cb) => {
     if (!room) return cb({ ok: false, error: 'Kamu belum ada di room.' });
     if (room.hostId !== socket.id) return cb({ ok: false, error: 'Cuma host yang bisa ganti video.' });
-    const media = validMedia(p?.media);
+    const media = validMedia(p?.media, socket.id);
     if (!media) return cb({ ok: false, error: 'Link ini belum bisa diputar.' });
     setMedia(room, media, room.members.get(socket.id)?.name ?? 'Host');
     broadcast(room);
@@ -126,6 +129,20 @@ io.on('connection', (socket: Socket<ClientToServer, ServerToClient>) => {
     play(room);
     system(room, restart ? `${by()} muter lagi dari awal` : `${by()} lanjut play di ${clock(room.playback.position)}`);
     broadcast(room);
+  });
+
+  socket.on('media:clear', () => {
+    if (!room || room.media?.kind !== 'stream' || room.media.publisherId !== socket.id) return;
+    const what = room.media.source === 'tab' ? 'share tab' : 'stream file';
+    clearMedia(room);
+    system(room, `${by()} berhenti ${what}`);
+    broadcast(room);
+  });
+
+  // Signalling is only relayed between members of the same room.
+  socket.on('rtc:signal', (p) => {
+    if (!room || typeof p?.to !== 'string' || !room.members.has(p.to) || !p.data) return;
+    io.to(p.to).emit('rtc:signal', { from: socket.id, data: p.data });
   });
 
   socket.on('media:duration', (p) => {

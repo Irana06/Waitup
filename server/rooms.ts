@@ -111,6 +111,10 @@ export function removeMember(room: Room, id: string): void {
   room.members.delete(id);
   release(room, id);
   system(room, `${m.name} keluar`);
+  if (room.media?.kind === 'stream' && room.media.publisherId === id) {
+    clearMedia(room);
+    system(room, 'Stream berhenti karena pengirimnya keluar');
+  }
   if (room.hostId === id) {
     const next = [...room.members.values()].sort((a, b) => a.joinedAt - b.joinedAt)[0];
     room.hostId = next ? next.id : '';
@@ -130,6 +134,14 @@ export function setMedia(room: Room, media: Media, by: string): void {
   }
   room.playback = { playing: true, position: 0, updatedAt: Date.now() };
   system(room, `${by} memutar ${media.title}`);
+}
+
+export function clearMedia(room: Room): void {
+  room.media = null;
+  room.duration = null;
+  room.holdFor.clear();
+  room.playback = { playing: false, position: 0, updatedAt: Date.now() };
+  for (const m of room.members.values()) m.buffering = false;
 }
 
 /** Play, or start over from the top when the media has already finished. */

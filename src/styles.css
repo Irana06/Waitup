@@ -92,6 +92,12 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .input[aria-invalid='true'] { border-color: var(--error); }
 .error-text { color: var(--error); font-size: 14px; font-weight: 500; }
 
+.source-on { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.source-panel { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; padding: 16px; border-radius: 12px; border: 1px dashed var(--border); background: var(--bg); }
+.file-btn { cursor: pointer; }
+.file-btn:focus-within { outline: 2px solid var(--ring); outline-offset: 2px; }
+.file-btn.is-disabled { opacity: 0.45; cursor: not-allowed; }
+
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 16px; }
 
 /* Layout */

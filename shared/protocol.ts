@@ -2,7 +2,21 @@ export type SyncMode = 'wait' | 'catch';
 
 export type Media =
   | { kind: 'youtube'; videoId: string; title: string }
-  | { kind: 'url'; url: string; title: string };
+  | { kind: 'url'; url: string; title: string }
+  /** Streamed peer-to-peer from the publisher's browser: a local file or a shared tab. */
+  | { kind: 'stream'; source: 'file' | 'tab'; title: string; publisherId: string };
+
+/** Media as the host proposes it; the server fills in who publishes a stream. */
+export type MediaInput =
+  | Exclude<Media, { kind: 'stream' }>
+  | { kind: 'stream'; source: 'file' | 'tab'; title: string };
+
+/** WebRTC signalling relayed by the server between the publisher and each viewer. */
+export type RtcSignal =
+  | { type: 'hello' }
+  | { type: 'offer'; sdp: string }
+  | { type: 'answer'; sdp: string }
+  | { type: 'ice'; to: 'host' | 'viewer'; candidate: RTCIceCandidateInit };
 
 export interface Member {
   id: string;
@@ -55,7 +69,9 @@ export interface ClientToServer {
   'room:create': (p: { name: string; device: string }, cb: Ack<{ code: string; you: string }>) => void;
   'room:join': (p: { code: string; name: string; device: string }, cb: Ack<{ code: string; you: string }>) => void;
   'room:leave': () => void;
-  'media:set': (p: { media: Media }, cb: Ack) => void;
+  'media:set': (p: { media: MediaInput }, cb: Ack) => void;
+  'media:clear': () => void;
+  'rtc:signal': (p: { to: string; data: RtcSignal }) => void;
   'media:duration': (p: { duration: number }) => void;
   'control:play': () => void;
   'control:pause': () => void;
@@ -69,6 +85,7 @@ export interface ClientToServer {
 
 export interface ServerToClient {
   'room:state': (s: RoomState) => void;
+  'rtc:signal': (p: { from: string; data: RtcSignal }) => void;
 }
 
 type Clock = Pick<RoomState, 'playback' | 'holdFor' | 'duration'>;

@@ -5,7 +5,10 @@ Nobar dan dengerin lagu bareng temen, dari PC atau HP. Host bikin room, temen jo
 ## Fitur (versi 0.1)
 
 - **Room dengan kode 6 angka** dan link undangan (`/482913`).
-- **Sumber:** link YouTube (watch, youtu.be, shorts, live) dan link file langsung (`.mp4`, `.webm`, `.mp3`, `.m4a`, `.ogg`, `.wav`, `.flac`).
+- **Sumber:**
+  - Link YouTube (watch, youtu.be, shorts, live) dan link file langsung (`.mp4`, `.webm`, `.mp3`, `.m4a`, `.ogg`, `.wav`, `.flac`).
+  - **File dari PC host:** di-stream langsung dari browser host ke tiap penonton lewat WebRTC, tanpa upload. Play, pause, dan loncat dari siapa pun tetap mengatur pemutar di host.
+  - **Share tab:** host membagikan satu tab browser (TikTok, live dari platform lain, situs apa pun) beserta audionya. Pause dan loncat diatur dari tab itu sendiri.
 - **Sinkron:** play, pause, dan loncat dari siapa pun langsung ngikut ke semua orang. Server memegang jam room, dan tiap pemutar dicocokkan ke jam itu setiap 0,4 detik.
 - **Mode kalau ada yang ngelag** (diatur host):
   - **Tunggu semua:** satu orang buffering lebih dari 0,6 detik, room di-pause sampai dia siap, lalu lanjut dari detik yang sama.
@@ -15,7 +18,13 @@ Nobar dan dengerin lagu bareng temen, dari PC atau HP. Host bikin room, temen jo
 - **Tema terang dan gelap**, warna dari palet Denia (lihat `brand/README.md`).
 - Chat dan daftar peserta.
 
-Belum ada: putar file langsung dari PC host dan share tab (TikTok, live dari platform lain). Keduanya butuh streaming WebRTC dan direncanakan pakai LiveKit.
+### Batasan streaming (file dari PC dan share tab)
+
+- Koneksinya langsung antar-browser: host mengirim satu salinan video ke tiap penonton, jadi enaknya sampai sekitar 5 penonton. Kualitas ngikut kecepatan upload host.
+- Cuma pakai STUN publik. Di jaringan yang ketat (sebagian kantor, kampus, atau operator seluler) koneksi langsung bisa gagal, dan perlu server TURN.
+- Streaming file butuh `captureStream` (Chrome, Edge, Firefox di PC). Share tab cuma bisa dari browser PC.
+- Kalau host me-refresh halaman, file atau tab yang di-share hilang dan perlu dipilih lagi.
+- Untuk penonton yang lebih banyak, ganti jalur pengiriman ke SFU seperti LiveKit.
 
 ## Menjalankan
 
@@ -43,7 +52,7 @@ Server melayani hasil build dari `dist/` dan Socket.IO di port `PORT` (default 3
 |---|---|
 | `shared/protocol.ts` | Tipe event dan state room, plus `positionAt()` yang dipakai server dan klien |
 | `server/` | Express + Socket.IO. `rooms.ts` menyimpan state room di memori |
-| `src/` | Klien React. `components/MediaSurface.tsx` berisi mesin sinkron untuk YouTube dan `<video>`/`<audio>` |
+| `src/` | Klien React. `components/MediaSurface.tsx` berisi mesin sinkron untuk YouTube dan `<video>`/`<audio>`. `lib/hostStream.ts` dan `components/RemoteStream.tsx` adalah sisi pengirim dan penerima stream WebRTC |
 | `brand/` | Logo, ikon, dan panduan brand |
 | `public/` | Favicon, ikon aplikasi, manifest PWA |
 | `docs/` | Aturan antislop dan hasil audit desain |

@@ -3,6 +3,7 @@ import type { RoomState } from '../shared/protocol.ts';
 import { socket } from './lib/socket.ts';
 import { deviceLabel } from './lib/format.ts';
 import { useTheme } from './lib/theme.ts';
+import { stopHosting } from './lib/hostStream.ts';
 import { Home } from './components/Home.tsx';
 import { Room } from './components/Room.tsx';
 
@@ -79,6 +80,7 @@ export function App() {
   };
 
   const leave = () => {
+    stopHosting();
     socket.emit('room:leave');
     setSession(null);
     setRoom(null);
