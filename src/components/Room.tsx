@@ -102,23 +102,21 @@ export function Room({ room, you, connected, theme, onTheme, onLeave }: Props) {
   };
 
   const [confirmLeave, setConfirmLeave] = useState(false);
+  const [giveTo, setGiveTo] = useState<Member | null>(null);
+  const request = isHost && room.hostRequest ? room.members.find((m) => m.id === room.hostRequest?.from) : undefined;
 
   return (
     <div>
       <header className="app-header">
-        <Lockup height={36} />
+        <Lockup height={30} />
         <div className="header-actions">
-          <div className="room-code">
-            <span className="muted" style={{ fontSize: 14 }}>
-              Kode room
-            </span>
+          <button type="button" className="room-code" onClick={() => copy('code')} aria-label={`Salin kode room ${room.code}`}>
+            <span className="muted">Kode</span>
             <strong className="tabular">
               {room.code.slice(0, 3)} {room.code.slice(3)}
             </strong>
-            <button type="button" className="btn btn-quiet" style={{ fontSize: 14 }} onClick={() => copy('code')}>
-              {copied === 'code' ? 'Tersalin' : 'Salin'}
-            </button>
-          </div>
+            <span className="room-code-hint">{copied === 'code' ? 'Tersalin' : 'Salin'}</span>
+          </button>
           <button type="button" className="btn btn-primary" onClick={() => copy('link')}>
             {copied === 'link' ? 'Link tersalin' : 'Undang temen'}
           </button>
@@ -143,13 +141,44 @@ export function Room({ room, you, connected, theme, onTheme, onLeave }: Props) {
           <SourceCard room={room} isHost={isHost} />
         </main>
         <aside>
-          <People room={room} you={you} lag={lag} />
-          <Chat room={room} />
+          <People room={room} you={you} lag={lag} onGive={setGiveTo} />
+          <Conversation room={room} you={you} />
         </aside>
       </div>
 
+      {request && !giveTo && !confirmLeave && (
+        <ConfirmDialog
+          title={`${request.name} pengin jadi host`}
+          body="Host bisa ganti video, ngatur mode kalau ada yang ngelag, dan streaming file atau tab. Kamu tetap bisa play, pause, dan loncat."
+          confirmLabel="Kasih host"
+          cancelLabel="Tolak"
+          onCancel={() => socket.emit('host:respond', { accept: false })}
+          onConfirm={() => socket.emit('host:respond', { accept: true })}
+        />
+      )}
+
+      {giveTo && (
+        <ConfirmDialog
+          title={`Serahin host ke ${giveTo.name}?`}
+          body="Setelah ini kamu nggak bisa ganti video atau ngatur mode, kecuali host-nya dikasih balik."
+          confirmLabel="Serahin host"
+          onCancel={() => setGiveTo(null)}
+          onConfirm={() => {
+            socket.emit('host:give', { to: giveTo.id });
+            setGiveTo(null);
+          }}
+        />
+      )}
+
       {confirmLeave && (
-        <LeaveDialog
+        <ConfirmDialog
+          title="Keluar dari room?"
+          body={
+            isHost && room.members.length > 1
+              ? 'Peran host otomatis pindah ke orang yang paling lama di room. Kamu bisa masuk lagi pakai kode yang sama.'
+              : 'Temen-temen kamu tetap bisa lanjut nonton. Kamu bisa masuk lagi pakai kode yang sama.'
+          }
+          confirmLabel="Keluar room"
           onCancel={() => setConfirmLeave(false)}
           onConfirm={() => {
             setConfirmLeave(false);
@@ -308,7 +337,7 @@ function PlayerCard({ room, you, position, effectivePlaying, lag, behind, member
             />
             {room.media.kind === 'url' && isAudioUrl(room.media.url) && (
               <div className="video-empty">
-                <span className="display" style={{ fontSize: 24 }}>
+                <span className="display" style={{ fontSize: 20 }}>
                   Lagi muter lagu
                 </span>
                 <p>{room.media.title}</p>
@@ -321,7 +350,7 @@ function PlayerCard({ room, you, position, effectivePlaying, lag, behind, member
           </>
         ) : (
           <div className="video-empty">
-            <span className="display" style={{ fontSize: 28 }}>
+            <span className="display" style={{ fontSize: 22 }}>
               Belum ada yang diputar
             </span>
             <p>Host tinggal tempel link YouTube atau link file di bawah.</p>
@@ -559,16 +588,14 @@ function SourceCard({ room, isHost }: { room: RoomState; isHost: boolean }) {
   };
 
   return (
-    <section className="card" style={{ display: 'flex', flexDirection: 'column', gap: 16, padding: 24 }}>
-      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16 }}>
+    <section className="card source-card">
+      <div className="source-top">
         <div style={{ minWidth: 0 }}>
-          <div className="muted" style={{ fontSize: 14 }}>
-            Sedang diputar oleh host
-          </div>
-          <h1 style={{ fontSize: 26, overflowWrap: 'anywhere' }}>{room.media?.title ?? 'Belum ada video'}</h1>
+          <div className="muted small">Sedang diputar</div>
+          <h1 className="now-title">{room.media?.title ?? 'Belum ada video'}</h1>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <span className="muted" style={{ fontSize: 14 }}>
+          <span className="muted small">
             Kalau ada yang ngelag{isHost ? '' : ' (diatur host)'}
           </span>
           <div className="seg" role="group" aria-label="Mode sinkron">
@@ -582,15 +609,15 @@ function SourceCard({ room, isHost }: { room: RoomState; isHost: boolean }) {
         </div>
       </div>
 
-      <div role="group" aria-label="Sumber video" style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+      <div className="seg seg-fill" role="group" aria-label="Sumber video">
         {(
           [
-            ['link', 'Link YouTube / URL'],
+            ['link', 'Link'],
             ['file', 'File dari PC'],
             ['tab', 'Share tab'],
           ] as const
         ).map(([id, label]) => (
-          <button key={id} type="button" className={tab === id ? 'btn source-on' : 'btn'} aria-pressed={tab === id} onClick={() => pickTab(id)}>
+          <button key={id} type="button" aria-pressed={tab === id} onClick={() => pickTab(id)}>
             {label}
           </button>
         ))}
@@ -692,67 +719,109 @@ function SourceCard({ room, isHost }: { room: RoomState; isHost: boolean }) {
   );
 }
 
-function People({ room, you, lag }: { room: RoomState; you: string; lag: Map<string, number> }) {
+function People({ room, you, lag, onGive }: { room: RoomState; you: string; lag: Map<string, number>; onGive(m: Member): void }) {
+  const isHost = room.hostId === you;
+  const req = room.hostRequest;
+  const mine = req?.from === you;
+  const someoneElse = req !== null && !mine;
+
   return (
     <section className="card">
-      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8, marginBottom: 8 }}>
-        <h2 style={{ fontSize: 20 }}>Di room</h2>
-        <span className="muted" style={{ fontSize: 14 }}>
-          {room.members.length} orang
-        </span>
+      <div className="card-head">
+        <h2>Di room</h2>
+        <span className="muted">{room.members.length} orang</span>
       </div>
       <ul className="people">
         {room.members.map((m) => {
           const behind = (lag.get(m.id) ?? 0) > LAG_SECONDS;
           let status = 'Sinkron';
           let color = 'var(--sync)';
-          let pulse = false;
+          let flagged = false;
           if (m.buffering) {
             status = 'Buffering';
             color = 'var(--accent)';
-            pulse = true;
+            flagged = true;
           } else if (behind && room.media) {
             status = 'Ngejar';
             color = 'var(--accent)';
-            pulse = true;
+            flagged = true;
           }
-          const flagged = pulse;
+          const canGive = isHost && m.id !== you;
           return (
             <li key={m.id} className={flagged ? 'person lagging' : 'person'}>
               <span className="avatar" style={{ borderColor: flagged ? 'var(--accent)' : 'transparent' }}>
                 {initial(m.name)}
               </span>
-              <div style={{ flex: '1 1 auto', minWidth: 0 }}>
-                <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', columnGap: 6, fontWeight: 500, overflowWrap: 'anywhere' }}>
-                  {m.name}
-                  {m.id === you && <span className="muted" style={{ whiteSpace: 'nowrap' }}>(kamu)</span>}
+              <div className="person-main">
+                <div className="person-name">
+                  <span>{m.name}</span>
+                  {m.id === you && <span className="muted">(kamu)</span>}
                   {m.id === room.hostId && <span className="badge">Host</span>}
                 </div>
-                <div className="muted" style={{ fontSize: 14 }}>
-                  {m.device}
+                <div className="person-meta">
+                  <span className={flagged ? 'dot pulse' : 'dot'} style={{ background: color }} />
+                  <span style={{ color }}>{status}</span>
+                  <span className="muted">· {m.device}</span>
                 </div>
               </div>
-              <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 14, fontWeight: 500, color }}>
-                <span className={pulse ? 'dot pulse' : 'dot'} style={{ background: color }} />
-                {status}
-              </span>
+              {canGive && (
+                <button type="button" className="btn btn-sm" onClick={() => onGive(m)} aria-label={`Jadikan ${m.name} host`}>
+                  Jadikan host
+                </button>
+              )}
             </li>
           );
         })}
       </ul>
+
+      {!isHost && (
+        <div className="host-ask">
+          {mine ? (
+            <>
+              <span className="muted">Nunggu {room.members.find((m) => m.id === room.hostId)?.name ?? 'host'} setuju…</span>
+              <button type="button" className="btn btn-sm" onClick={() => socket.emit('host:cancel')}>
+                Batal
+              </button>
+            </>
+          ) : someoneElse ? (
+            <span className="muted">{room.members.find((m) => m.id === req.from)?.name ?? 'Seseorang'} lagi minta jadi host.</span>
+          ) : (
+            <button type="button" className="btn btn-sm" onClick={() => socket.emit('host:request')}>
+              Minta jadi host
+            </button>
+          )}
+        </div>
+      )}
     </section>
   );
 }
 
-function Chat({ room }: { room: RoomState }) {
-  const [draft, setDraft] = useState('');
-  const log = useRef<HTMLDivElement>(null);
-  const last = room.chat[room.chat.length - 1]?.id;
+function hhmm(at: number): string {
+  const d = new Date(at);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
 
+function Conversation({ room, you }: { room: RoomState; you: string }) {
+  const [tab, setTab] = useState<'chat' | 'log'>('chat');
+  const [draft, setDraft] = useState('');
+  const list = useRef<HTMLDivElement>(null);
+  const messages = room.chat.filter((m) => !m.system);
+  const events = room.chat.filter((m) => m.system);
+  const shown = tab === 'chat' ? messages : events;
+  const myName = room.members.find((m) => m.id === you)?.name;
+
+  // Count chat messages that arrived while the Log tab was open.
+  const [seen, setSeen] = useState(messages.length);
   useEffect(() => {
-    const el = log.current;
+    if (tab === 'chat') setSeen(messages.length);
+  }, [tab, messages.length]);
+  const unread = Math.max(0, messages.length - seen);
+
+  const lastId = shown[shown.length - 1]?.id;
+  useEffect(() => {
+    const el = list.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [last]);
+  }, [lastId, tab]);
 
   const send = (e: FormEvent) => {
     e.preventDefault();
@@ -763,55 +832,78 @@ function Chat({ room }: { room: RoomState }) {
   };
 
   return (
-    <section className="card" style={{ display: 'flex', flexDirection: 'column', flex: '1 1 auto' }}>
-      <h2 style={{ fontSize: 20, marginBottom: 8 }}>Chat</h2>
-      <div ref={log} className="chat-log" role="log" aria-label="Pesan chat">
-        {room.chat.length === 0 && <p className="muted">Belum ada obrolan.</p>}
-        {room.chat.map((m) =>
-          m.system ? (
-            <div key={m.id} className="chat-sys">
-              {m.text}
-            </div>
-          ) : (
-            <div key={m.id} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-              <span style={{ fontSize: 14, fontWeight: 700 }}>{m.from}</span>
-              <span style={{ overflowWrap: 'anywhere' }}>{m.text}</span>
-            </div>
-          ),
-        )}
-      </div>
-      <form onSubmit={send} style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-        <label htmlFor="chat" className="sr-only">
-          Tulis pesan
-        </label>
-        <input id="chat" className="input" style={{ minHeight: 44 }} maxLength={500} placeholder="Tulis pesan…" value={draft} onChange={(e) => setDraft(e.target.value)} />
-        <button type="submit" className="btn btn-primary">
-          Kirim
+    <section className="card convo">
+      <div className="tabs" role="tablist" aria-label="Chat dan log">
+        <button type="button" role="tab" id="tab-chat" aria-selected={tab === 'chat'} aria-controls="panel-convo" onClick={() => setTab('chat')}>
+          Chat
+          {unread > 0 && <span className="count">{unread}</span>}
         </button>
-      </form>
+        <button type="button" role="tab" id="tab-log" aria-selected={tab === 'log'} aria-controls="panel-convo" onClick={() => setTab('log')}>
+          Log
+        </button>
+      </div>
+
+      <div ref={list} id="panel-convo" className="convo-list" role="tabpanel" aria-labelledby={tab === 'chat' ? 'tab-chat' : 'tab-log'} aria-live="polite">
+        {shown.length === 0 && (
+          <p className="muted empty">{tab === 'chat' ? 'Belum ada obrolan. Sapa temen-temen kamu.' : 'Belum ada kejadian.'}</p>
+        )}
+        {tab === 'chat'
+          ? messages.map((m) => (
+              <div key={m.id} className={m.from === myName ? 'msg own' : 'msg'}>
+                <div className="msg-head">
+                  <strong>{m.from}</strong>
+                  <span className="muted">{hhmm(m.at)}</span>
+                </div>
+                <p>{m.text}</p>
+              </div>
+            ))
+          : events.map((m) => (
+              <div key={m.id} className="event">
+                <span className="muted tabular">{hhmm(m.at)}</span>
+                <span>{m.text}</span>
+              </div>
+            ))}
+      </div>
+
+      {tab === 'chat' && (
+        <form onSubmit={send} className="convo-form">
+          <label htmlFor="chat" className="sr-only">
+            Tulis pesan
+          </label>
+          <input id="chat" className="input" maxLength={500} placeholder="Tulis pesan…" value={draft} onChange={(e) => setDraft(e.target.value)} />
+          <button type="submit" className="btn btn-primary">
+            Kirim
+          </button>
+        </form>
+      )}
     </section>
   );
 }
 
-function LeaveDialog({ onCancel, onConfirm }: { onCancel(): void; onConfirm(): void }) {
+interface ConfirmProps {
+  title: string;
+  body: string;
+  confirmLabel: string;
+  cancelLabel?: string;
+  onCancel(): void;
+  onConfirm(): void;
+}
+
+function ConfirmDialog({ title, body, confirmLabel, cancelLabel = 'Batal', onCancel, onConfirm }: ConfirmProps) {
   const onKey = (e: KeyboardEvent) => {
     if (e.key === 'Escape') onCancel();
   };
   return (
     <div className="scrim" onClick={onCancel}>
-      <div className="dialog" role="dialog" aria-modal="true" aria-labelledby="leave-title" onKeyDown={onKey} onClick={(e) => e.stopPropagation()}>
-        <h2 id="leave-title" style={{ fontSize: 22, marginBottom: 6 }}>
-          Keluar dari room?
-        </h2>
-        <p className="muted" style={{ margin: '0 0 20px' }}>
-          Temen-temen kamu tetap bisa lanjut nonton. Kamu bisa masuk lagi pakai kode yang sama.
-        </p>
-        <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 8 }}>
+      <div className="dialog" role="dialog" aria-modal="true" aria-labelledby="dialog-title" onKeyDown={onKey} onClick={(e) => e.stopPropagation()}>
+        <h2 id="dialog-title">{title}</h2>
+        <p className="muted">{body}</p>
+        <div className="dialog-actions">
           <button type="button" className="btn" autoFocus onClick={onCancel}>
-            Batal
+            {cancelLabel}
           </button>
           <button type="button" className="btn btn-primary" onClick={onConfirm}>
-            Keluar room
+            {confirmLabel}
           </button>
         </div>
       </div>

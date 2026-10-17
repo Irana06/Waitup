@@ -13,9 +13,13 @@ export interface Room {
   playback: { playing: boolean; position: number; updatedAt: number };
   mode: SyncMode;
   holdFor: Set<string>;
+  hostRequest: { from: string; at: number } | null;
   chat: ChatMessage[];
   emptySince: number | null;
 }
+
+/** An unanswered host request stops blocking new ones after this long. */
+const HOST_REQUEST_TTL_MS = 2 * 60 * 1000;
 
 const rooms = new Map<string, Room>();
 let msgSeq = 0;
@@ -38,6 +42,7 @@ export function createRoom(): Room {
     playback: { playing: false, position: 0, updatedAt: Date.now() },
     mode: 'wait',
     holdFor: new Set(),
+    hostRequest: null,
     chat: [],
     emptySince: null,
   };
@@ -59,6 +64,7 @@ export function snapshot(room: Room): RoomState {
     playback: { ...room.playback },
     mode: room.mode,
     holdFor: [...room.holdFor],
+    hostRequest: room.hostRequest,
     chat: room.chat,
     serverNow: Date.now(),
   };
@@ -110,6 +116,7 @@ export function removeMember(room: Room, id: string): void {
   if (!m) return;
   room.members.delete(id);
   release(room, id);
+  if (room.hostRequest && (room.hostRequest.from === id || room.hostId === id)) room.hostRequest = null;
   system(room, `${m.name} keluar`);
   if (room.media?.kind === 'stream' && room.media.publisherId === id) {
     clearMedia(room);
@@ -134,6 +141,47 @@ export function setMedia(room: Room, media: Media, by: string): void {
   }
   room.playback = { playing: true, position: 0, updatedAt: Date.now() };
   system(room, `${by} memutar ${media.title}`);
+}
+
+function nameOf(room: Room, id: string): string {
+  return room.members.get(id)?.name ?? 'Seseorang';
+}
+
+/** A non-host asks for control. Returns an error message, or null when the request was recorded. */
+export function requestHost(room: Room, from: string): string | null {
+  if (from === room.hostId) return 'Kamu udah jadi host.';
+  const pending = room.hostRequest;
+  if (pending && pending.from !== from && Date.now() - pending.at < HOST_REQUEST_TTL_MS) {
+    return `${nameOf(room, pending.from)} lagi minta jadi host. Tunggu sebentar.`;
+  }
+  room.hostRequest = { from, at: Date.now() };
+  system(room, `${nameOf(room, from)} minta jadi host`);
+  return null;
+}
+
+export function cancelHostRequest(room: Room, from: string): void {
+  if (room.hostRequest?.from !== from) return;
+  room.hostRequest = null;
+  system(room, `${nameOf(room, from)} batal minta jadi host`);
+}
+
+export function respondHostRequest(room: Room, host: string, accept: boolean): void {
+  const req = room.hostRequest;
+  if (host !== room.hostId || !req) return;
+  room.hostRequest = null;
+  if (accept && room.members.has(req.from)) {
+    room.hostId = req.from;
+    system(room, `${nameOf(room, host)} nyerahin host ke ${nameOf(room, req.from)}`);
+  } else {
+    system(room, `${nameOf(room, host)} belum mau nyerahin host`);
+  }
+}
+
+export function giveHost(room: Room, host: string, to: string): void {
+  if (host !== room.hostId || to === host || !room.members.has(to)) return;
+  room.hostId = to;
+  room.hostRequest = null;
+  system(room, `${nameOf(room, host)} nyerahin host ke ${nameOf(room, to)}`);
 }
 
 export function clearMedia(room: Room): void {

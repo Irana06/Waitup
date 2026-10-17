@@ -49,7 +49,7 @@ export function Home({ theme, onTheme, initialName, initialCode, connected, erro
   return (
     <div className="home">
       <header className="app-header">
-        <Lockup height={36} />
+        <Lockup height={30} />
         <ThemeToggle theme={theme} onChange={onTheme} />
       </header>
 
@@ -91,7 +91,7 @@ export function Home({ theme, onTheme, initialName, initialCode, connected, erro
 
         <div className="home-grid">
           <form className="card" onSubmit={create}>
-            <h2 style={{ fontSize: 24 }}>Jadi host</h2>
+            <h2>Jadi host</h2>
             <p className="muted" style={{ margin: 0 }}>
               Kamu yang milih video. Temen join pakai kode 6 angka atau link room.
             </p>
@@ -101,7 +101,7 @@ export function Home({ theme, onTheme, initialName, initialCode, connected, erro
           </form>
 
           <form className="card" onSubmit={join}>
-            <h2 style={{ fontSize: 24 }}>Join room temen</h2>
+            <h2>Join room temen</h2>
             <div className="field">
               <label htmlFor="code">Kode room</label>
               <input

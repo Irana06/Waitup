@@ -58,6 +58,8 @@ export interface RoomState {
   mode: SyncMode;
   /** Member ids everyone is currently waiting for (mode "wait" only). */
   holdFor: string[];
+  /** A member asking the current host to hand over control. */
+  hostRequest: { from: string; at: number } | null;
   chat: ChatMessage[];
   serverNow: number;
 }
@@ -77,6 +79,10 @@ export interface ClientToServer {
   'control:pause': () => void;
   'control:seek': (p: { position: number }) => void;
   'mode:set': (p: { mode: SyncMode }) => void;
+  'host:request': () => void;
+  'host:cancel': () => void;
+  'host:respond': (p: { accept: boolean }) => void;
+  'host:give': (p: { to: string }) => void;
   'status:buffering': (p: { position: number }) => void;
   'status:ready': (p: { position: number }) => void;
   'status:position': (p: { position: number }) => void;

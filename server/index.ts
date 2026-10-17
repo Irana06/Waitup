@@ -5,7 +5,8 @@ import { fileURLToPath } from 'node:url';
 import { Server, type Socket } from 'socket.io';
 import type { ClientToServer, Media, ServerToClient } from '../shared/protocol.ts';
 import {
-  addMember, clearMedia, createRoom, ended, getRoom, hold, pause, play, release, removeMember, say, seek,
+  addMember, cancelHostRequest, clearMedia, createRoom, ended, getRoom, giveHost, hold, pause, play, release,
+  removeMember, requestHost, respondHostRequest, say, seek,
   setDuration, setMedia, setMode, snapshot, sweepEmptyRooms, system, type Room,
 } from './rooms.ts';
 
@@ -166,6 +167,30 @@ io.on('connection', (socket: Socket<ClientToServer, ServerToClient>) => {
     if (!room?.media || pos === null) return;
     seek(room, pos);
     system(room, `${by()} loncat ke ${clock(pos)}`);
+    broadcast(room);
+  });
+
+  socket.on('host:request', () => {
+    if (!room) return;
+    requestHost(room, socket.id);
+    broadcast(room);
+  });
+
+  socket.on('host:cancel', () => {
+    if (!room) return;
+    cancelHostRequest(room, socket.id);
+    broadcast(room);
+  });
+
+  socket.on('host:respond', (p) => {
+    if (!room || typeof p?.accept !== 'boolean') return;
+    respondHostRequest(room, socket.id, p.accept);
+    broadcast(room);
+  });
+
+  socket.on('host:give', (p) => {
+    if (!room || typeof p?.to !== 'string') return;
+    giveHost(room, socket.id, p.to);
     broadcast(room);
   });
 
