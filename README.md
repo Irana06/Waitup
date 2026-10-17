@@ -44,7 +44,19 @@ npm run build
 npm start
 ```
 
-Server melayani hasil build dari `dist/` dan Socket.IO di port `PORT` (default 3001).
+Server melayani hasil build dari `dist/` dan Socket.IO di port `PORT` (default 3001). Set `HOST=127.0.0.1` kalau dipasang di belakang reverse proxy.
+
+### Deploy ke home server (nginx + Cloudflare Tunnel)
+
+```bash
+git clone https://github.com/Irana06/Waitup.git ~/waitup
+cd ~/waitup && npm ci && npm run build
+sudo sh deploy/install-homeserver.sh waitup.yushika.my.id
+```
+
+Skrip itu memasang service systemd `waitup` (port 3001, cuma di 127.0.0.1), situs nginx yang meneruskan WebSocket, dan hostname di `/etc/cloudflared/config.yml`. DNS-nya didaftarkan sekali dengan `cloudflared tunnel route dns <tunnel> <domain>`.
+
+Update berikutnya: `sh deploy/update.sh`.
 
 ## Struktur
 

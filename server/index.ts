@@ -10,6 +10,8 @@ import {
 } from './rooms.ts';
 
 const PORT = Number(process.env.PORT ?? 3001);
+/** Set HOST=127.0.0.1 behind a reverse proxy so the app is only reachable through it. */
+const HOST = process.env.HOST ?? '0.0.0.0';
 const isProd = process.env.NODE_ENV === 'production';
 
 const app = express();
@@ -213,6 +215,6 @@ io.on('connection', (socket: Socket<ClientToServer, ServerToClient>) => {
 
 setInterval(sweepEmptyRooms, 60_000);
 
-http.listen(PORT, () => {
-  console.log(`Waitup server di http://localhost:${PORT}${isProd ? '' : ' (dev, buka http://localhost:5173)'}`);
+http.listen(PORT, HOST, () => {
+  console.log(`Waitup server di http://${HOST}:${PORT}${isProd ? '' : ' (dev, buka http://localhost:5173)'}`);
 });
