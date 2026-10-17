@@ -133,24 +133,43 @@ export function useFriends(): { friends: FriendEntry[]; loading: boolean; error:
     }
     let stop = false;
     setLoading(true);
-    fetch('/api/friends', { credentials: 'same-origin' })
-      .then((r) => json<{ friends: FriendEntry[] }>(r))
-      .then((d) => !stop && (setFriends(d.friends), setError('')))
-      .catch((e: Error) => !stop && setError(e.message))
-      .finally(() => !stop && setLoading(false));
+    // Phones drop requests while switching networks; one quiet retry covers most of those.
+    const load = (attempt: number): Promise<void> =>
+      fetch('/api/friends', { credentials: 'same-origin' })
+        .then((r) => json<{ friends: FriendEntry[] }>(r))
+        .then((d) => {
+          if (stop) return;
+          setFriends(d.friends);
+          setError('');
+        })
+        .catch((e: Error) => {
+          if (stop) return;
+          if (e instanceof TypeError && attempt === 0) return new Promise<void>((r) => setTimeout(r, 1500)).then(() => load(1));
+          // Keep the last list on screen; only say what went wrong.
+          setError(e instanceof TypeError ? 'Daftar teman gagal dimuat. Cek koneksi kamu.' : e.message);
+        });
+    void load(0).finally(() => !stop && setLoading(false));
     return () => {
       stop = true;
     };
   }, [user, tick]);
 
-  // Live updates from the server, plus a slow poll in case an event was missed.
+  // Live updates from the server, a slow poll in case an event was missed, and a refresh
+  // whenever the phone comes back online or the tab becomes visible again.
   useEffect(() => {
     if (!user) return;
     const onChange = () => refresh();
+    const onVisible = () => document.visibilityState === 'visible' && refresh();
     socket.on('friends:changed', onChange);
+    socket.on('connect', onChange);
+    window.addEventListener('online', onChange);
+    document.addEventListener('visibilitychange', onVisible);
     const poll = setInterval(refresh, 30_000);
     return () => {
       socket.off('friends:changed', onChange);
+      socket.off('connect', onChange);
+      window.removeEventListener('online', onChange);
+      document.removeEventListener('visibilitychange', onVisible);
       clearInterval(poll);
     };
   }, [user]);

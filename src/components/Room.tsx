@@ -12,8 +12,8 @@ import { clock, initial } from '../lib/format.ts';
 import { isAudioUrl, parseMediaLink } from '../lib/media.ts';
 import type { Theme } from '../lib/theme.ts';
 import { setCaptions, useCaptions } from '../lib/captions.ts';
-import { AccountButton, FriendsPanel } from './Account.tsx';
-import { Lockup } from './Logo.tsx';
+import { AccountButton, FriendsPanel, RoomMenu } from './Account.tsx';
+import { Lockup, Mark } from './Logo.tsx';
 import { MediaSurface } from './MediaSurface.tsx';
 import { ThemeToggle } from './ThemeToggle.tsx';
 
@@ -150,8 +150,47 @@ export function Room({ room, you, connected, theme, onTheme, onLeave, onJoinFrie
     };
   }, [requestKey]);
 
+  // Phones get the native share sheet; everything else copies the link.
+  const invite = async () => {
+    const url = `${location.origin}/${room.code}`;
+    if (navigator.share && isTouch()) {
+      try {
+        await navigator.share({ title: 'Nobar di Waitup', text: `Yuk nobar bareng, kode room ${room.code}`, url });
+        return;
+      } catch (e) {
+        if (e instanceof DOMException && e.name === 'AbortError') return;
+      }
+    }
+    void copy('link');
+  };
+
   return (
     <div>
+      {compact ? (
+        <header className="app-header room-header">
+          <Mark size={28} />
+          <button type="button" className="room-code" onClick={() => copy('code')} aria-label={`Salin kode room ${room.code}`}>
+            <strong className="tabular">
+              {room.code.slice(0, 3)} {room.code.slice(3)}
+            </strong>
+            <span className="room-code-hint">{copied === 'code' ? 'Tersalin' : 'Salin'}</span>
+          </button>
+          <span style={{ flex: '1 1 auto' }} />
+          <button type="button" className="icon-btn accent" onClick={invite} aria-label="Undang temen">
+            {copied === 'link' ? (
+              <span className="small" style={{ fontWeight: 700, padding: '0 4px' }}>
+                Tersalin
+              </span>
+            ) : (
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M16 8a3 3 0 1 0-2.8-4M8 12l8-4M8 12l8 4M16 16a3 3 0 1 0 2.8 4" />
+                <circle cx="6" cy="12" r="3" />
+              </svg>
+            )}
+          </button>
+          <RoomMenu theme={theme} onTheme={onTheme} onLeave={() => setConfirmLeave(true)} />
+        </header>
+      ) : (
       <header className="app-header">
         <Lockup height={30} />
         <div className="header-actions">
@@ -172,6 +211,7 @@ export function Room({ room, you, connected, theme, onTheme, onLeave, onJoinFrie
           <AccountButton theme={theme} />
         </div>
       </header>
+      )}
 
       {!connected && (
         <div className="banner" role="status">

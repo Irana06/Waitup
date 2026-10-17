@@ -134,6 +134,125 @@ export function AccountButton({ theme }: { theme: Theme }) {
   );
 }
 
+/**
+ * Phone header overflow menu: theme, account and leaving the room live here so the header
+ * itself stays one short row above the video.
+ */
+export function RoomMenu({ theme, onTheme, onLeave }: { theme: Theme; onTheme(t: Theme): void; onLeave(): void }) {
+  const { user, googleClientId } = useAccount();
+  const [open, setOpen] = useState(false);
+  const [signIn, setSignIn] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const wrap = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: PointerEvent) => {
+      if (wrap.current && !wrap.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false);
+    document.addEventListener('pointerdown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('pointerdown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  const copyCode = async () => {
+    if (!user) return;
+    try {
+      await navigator.clipboard.writeText(user.friendCode);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      window.prompt('Kode teman kamu:', user.friendCode);
+    }
+  };
+
+  return (
+    <div className="account" ref={wrap}>
+      <button type="button" className="icon-btn menu-trigger" aria-haspopup="menu" aria-expanded={open} aria-label="Menu" onClick={() => setOpen((v) => !v)}>
+        {user ? (
+          <Avatar name={user.name} picture={user.picture} size={28} />
+        ) : (
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <circle cx="5" cy="12" r="2" />
+            <circle cx="12" cy="12" r="2" />
+            <circle cx="19" cy="12" r="2" />
+          </svg>
+        )}
+      </button>
+      {open && (
+        <div className="menu" role="menu">
+          {user ? (
+            <>
+              <div className="menu-head">
+                <strong>{user.name}</strong>
+                {user.email && <span className="muted small">{user.email}</span>}
+              </div>
+              <button type="button" role="menuitem" className="menu-item" onClick={copyCode}>
+                <span>Kode teman</span>
+                <strong className="tabular">{copied ? 'Tersalin' : user.friendCode}</strong>
+              </button>
+            </>
+          ) : (
+            googleClientId && (
+              <button
+                type="button"
+                role="menuitem"
+                className="menu-item"
+                onClick={() => {
+                  setOpen(false);
+                  setSignIn(true);
+                }}
+              >
+                Masuk dengan Google
+              </button>
+            )
+          )}
+          <div className="menu-row">
+            <span>Tema</span>
+            <div className="seg" role="group" aria-label="Tema">
+              <button type="button" aria-pressed={theme === 'light'} onClick={() => onTheme('light')}>
+                Terang
+              </button>
+              <button type="button" aria-pressed={theme === 'dark'} onClick={() => onTheme('dark')}>
+                Gelap
+              </button>
+            </div>
+          </div>
+          {user && (
+            <button
+              type="button"
+              role="menuitem"
+              className="menu-item"
+              onClick={() => {
+                setOpen(false);
+                void signOut();
+              }}
+            >
+              Keluar akun
+            </button>
+          )}
+          <button
+            type="button"
+            role="menuitem"
+            className="menu-item danger"
+            onClick={() => {
+              setOpen(false);
+              onLeave();
+            }}
+          >
+            Keluar dari room
+          </button>
+        </div>
+      )}
+      {signIn && <SignInDialog theme={theme} onClose={() => setSignIn(false)} />}
+    </div>
+  );
+}
+
 function describe(f: FriendEntry): string {
   if (f.status === 'incoming') return 'Pengin berteman sama kamu';
   if (f.status === 'outgoing') return 'Nunggu diterima';
@@ -228,9 +347,12 @@ export function FriendsPanel({ theme, currentRoom, onJoin }: FriendsPanelProps) 
       </form>
 
       {error && (
-        <p className="error-text" role="alert">
-          {error}
-        </p>
+        <div className="inline-error" role="alert">
+          <span className="error-text">{error}</span>
+          <button type="button" className="btn btn-sm" onClick={refresh}>
+            Coba lagi
+          </button>
+        </div>
       )}
 
       {incoming.length > 0 && (

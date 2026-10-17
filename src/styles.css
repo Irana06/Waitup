@@ -267,6 +267,19 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   .panel-body .convo-list { max-height: 55vh; }
 }
 
+/* Phone room header: one short row so the video sits as high as possible. */
+.room-header { flex-wrap: nowrap; gap: 8px; padding: 8px 12px; }
+.room-header .room-code { padding: 0 10px; gap: 8px; }
+.icon-btn { min-width: 44px; min-height: 44px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); color: var(--ink); }
+.icon-btn.accent { border-color: transparent; background: var(--primary-bg); color: var(--primary-ink); }
+.menu-trigger { border-radius: 999px; padding: 0; }
+.menu-trigger .avatar { width: 34px !important; height: 34px !important; }
+.menu-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 10px; font-size: 14px; }
+.menu-item.danger { color: var(--error); font-weight: 700; }
+.inline-error { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+/* Google renders its button in an iframe; matching its light scheme keeps the frame transparent in dark mode. */
+.gsi-button { color-scheme: light; min-height: 44px; }
+
 /* Account */
 .account { position: relative; }
 .account-btn { min-height: var(--h-ctl); display: inline-flex; align-items: center; gap: 8px; padding: 0 10px 0 4px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface); font-size: 14px; font-weight: 500; }
@@ -344,6 +357,9 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   .ctl-bottom { padding: 22px 6px 2px; gap: 0; }
   .controls { padding: 12px; }
   .wait-overlay h2 { font-size: 30px; }
+  .source-top { flex-direction: column; align-items: stretch; }
+  .source-top > div { width: 100%; }
   .source-top .seg { width: 100%; }
   .source-top .seg button { flex: 1 1 0; }
+  .menu { position: fixed; top: 60px; right: 12px; left: 12px; min-width: 0; }
 }
