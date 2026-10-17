@@ -115,19 +115,42 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .player { overflow: hidden; display: flex; flex-direction: column; border-radius: var(--radius-lg); border: 1px solid var(--border); background: var(--surface); }
 .player:fullscreen, .player.pseudo-fs { border: 0; border-radius: 0; background: #000; }
 .player.pseudo-fs { position: fixed; inset: 0; z-index: 50; }
+.player:fullscreen, .player.pseudo-fs { width: 100vw; height: 100vh; height: 100dvh; }
 .player:fullscreen .video, .player.pseudo-fs .video { aspect-ratio: auto; flex: 1 1 auto; min-height: 0; }
 .video { position: relative; aspect-ratio: 16 / 9; background: var(--video-bg); display: flex; align-items: center; justify-content: center; color: var(--video-ink); }
 .video iframe, .video video { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
 .video audio { width: 80%; }
 .video-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 24px; text-align: center; }
 .video-empty p { margin: 0; color: var(--video-muted); }
+/* On-video controls. The bottom gradient exists only to keep white controls legible over any frame. */
+.ctl { position: absolute; inset: 0; z-index: 5; display: flex; flex-direction: column; justify-content: flex-end; color: #FFFFFF; opacity: 0; transition: opacity var(--dur-med) ease-out; }
+.ctl.visible { opacity: 1; }
+.ctl:not(.visible) .ctl-bottom, .ctl:not(.visible) .ctl-center button { pointer-events: none; }
+.video.idle, .video.idle .ctl-hit { cursor: none; }
+.ctl-hit { position: absolute; inset: 0; }
+.ctl-center { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; pointer-events: none; }
+.ctl-center button { pointer-events: auto; }
+.ctl-big { width: 72px; height: 72px; border-radius: 50%; border: 0; background: rgba(8, 18, 26, 0.6); color: #FFFFFF; display: flex; align-items: center; justify-content: center; }
+.ctl-big:hover { background: rgba(8, 18, 26, 0.8); }
+.ctl-bottom { position: relative; display: flex; flex-direction: column; gap: 6px; padding: 40px 12px 8px; background: linear-gradient(to top, rgba(5, 12, 20, 0.88), rgba(5, 12, 20, 0)); }
+.ctl-time { font-size: 14px; font-weight: 500; padding: 0 4px; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6); }
+.ctl-live { display: flex; align-items: center; gap: 8px; padding: 0 4px; font-weight: 700; }
+.ctl-row { display: flex; align-items: center; gap: 4px; }
+.ctl-btn { min-width: 44px; height: 44px; padding: 0 8px; border: 0; border-radius: var(--radius-md); background: transparent; color: #FFFFFF; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; }
+.ctl-btn:hover { background: rgba(255, 255, 255, 0.14); }
+.ctl .seek { height: 5px; background: linear-gradient(to right, #FFFFFF var(--fill, 0%), rgba(255, 255, 255, 0.3) var(--fill, 0%)); accent-color: #FFFFFF; margin: 4px 0; cursor: pointer; }
+.ctl .seek::-webkit-slider-thumb { width: 16px; height: 16px; background: #FFFFFF; border: 0; }
+.ctl .seek::-moz-range-thumb { width: 14px; height: 14px; background: #FFFFFF; border: 0; }
+.ctl :focus-visible { outline-color: #7FE3F0; }
+.player:fullscreen .player-below, .player.pseudo-fs .player-below { display: none; }
+
 .chip { position: absolute; top: 14px; left: 14px; z-index: 3; display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-radius: 8px; background: rgba(8, 18, 26, 0.82); color: #EEF0FA; font-size: 14px; font-weight: 500; }
 .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
 
 .wait-overlay { position: absolute; inset: 0; z-index: 4; overflow: hidden; background: var(--overlay); color: var(--ink); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 24px; text-align: center; animation: wu-in var(--dur-med) ease-out; }
 .wait-overlay h2 { font-weight: 700; font-size: 48px; color: var(--accent); }
 .wait-overlay p { margin: 0; }
-.tap-overlay { position: absolute; inset: 0; z-index: 5; display: flex; align-items: center; justify-content: center; background: rgba(5, 12, 20, 0.7); }
+.tap-overlay { position: absolute; inset: 0; z-index: 6; display: flex; align-items: center; justify-content: center; background: rgba(5, 12, 20, 0.7); }
 
 .bubble { position: absolute; bottom: -20px; border-radius: 50%; border: 2px solid var(--accent); background: var(--accent-soft); animation: wu-rise 4.5s ease-in infinite; }
 
@@ -184,6 +207,9 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 
 @media (max-width: 520px) {
   .app-header, .layout { padding-left: 16px; padding-right: 16px; }
+  /* A small 16:9 frame has no room for both; the play button in the bottom row stays. */
+  .player:not(:fullscreen):not(.pseudo-fs) .ctl-center { display: none; }
+  .ctl-bottom { padding: 24px 8px 4px; gap: 2px; }
   .controls { padding: 16px; }
   .wait-overlay h2 { font-size: 36px; }
 }

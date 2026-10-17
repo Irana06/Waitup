@@ -1,4 +1,7 @@
-import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent } from 'react';
+import {
+  useEffect, useMemo, useRef, useState,
+  type ChangeEvent, type FormEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent,
+} from 'react';
 import { getHostSource, hostFile, hostTab, stopHosting, useHostSource } from '../lib/hostStream.ts';
 import { canShareTab, canStreamFile } from '../lib/rtc.ts';
 import type { Member, RoomState } from '../../shared/protocol.ts';
@@ -10,6 +13,21 @@ import type { Theme } from '../lib/theme.ts';
 import { Lockup } from './Logo.tsx';
 import { MediaSurface } from './MediaSurface.tsx';
 import { ThemeToggle } from './ThemeToggle.tsx';
+
+const CONTROLS_IDLE_MS = 3000;
+
+function PlayIcon({ pause, size }: { pause: boolean; size: number }) {
+  return pause ? (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <rect x="6" y="5" width="4" height="14" rx="1" />
+      <rect x="14" y="5" width="4" height="14" rx="1" />
+    </svg>
+  ) : (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M8 5.5v13l11-6.5z" />
+    </svg>
+  );
+}
 
 /** A member this far behind the room (seconds) counts as left behind. */
 const LAG_SECONDS = 1.5;
@@ -182,9 +200,15 @@ function PlayerCard({ room, you, position, effectivePlaying, lag, behind, member
     }
   };
 
-  const onCardKey = (e: KeyboardEvent) => {
-    if (e.key === 'Escape' && pseudoFs) setPseudoFs(false);
-  };
+  // Native fullscreen handles Esc itself; the CSS fallback listens only while it is on.
+  useEffect(() => {
+    if (!pseudoFs) return;
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key === 'Escape') setPseudoFs(false);
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [pseudoFs]);
 
   // A shared tab is controlled from the tab itself, so the room clock has nothing to drive.
   const isLive = room.media?.kind === 'stream' && room.media.source === 'tab';
@@ -212,6 +236,46 @@ function PlayerCard({ room, you, position, effectivePlaying, lag, behind, member
     setDrag(null);
   };
 
+  const playLabel = finished ? 'Putar lagi dari awal' : showPause ? 'Pause buat semua' : 'Play buat semua';
+  const togglePlay = () => {
+    socket.emit(showPause ? 'control:pause' : 'control:play');
+    poke();
+  };
+  const seekBy = (delta: number) => {
+    socket.emit('control:seek', { position: Math.max(0, position + delta) });
+    poke();
+  };
+
+  // On-video controls: always shown while paused, otherwise they fade after a few idle seconds.
+  const [chrome, setChrome] = useState(true);
+  const hideTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const pinned = !effectivePlaying || drag !== null;
+  const visible = chrome || pinned;
+  const poke = () => {
+    setChrome(true);
+    clearTimeout(hideTimer.current);
+    hideTimer.current = setTimeout(() => setChrome(false), CONTROLS_IDLE_MS);
+  };
+  useEffect(() => {
+    if (effectivePlaying) poke();
+    return () => clearTimeout(hideTimer.current);
+    // Restart the idle timer only when playback starts or stops.
+  }, [effectivePlaying]);
+
+  // Mouse: click plays or pauses, like most video players. Touch: tap shows or hides the controls.
+  const onHitUp = (e: ReactPointerEvent) => {
+    if (e.pointerType === 'mouse') {
+      if (e.button !== 0) return;
+      if (hasMedia) togglePlay();
+      else poke();
+    } else if (visible && !pinned) {
+      clearTimeout(hideTimer.current);
+      setChrome(false);
+    } else {
+      poke();
+    }
+  };
+
   let chipText = 'Semua sinkron';
   let chipColor = 'var(--on-video-sync)';
   if (waiting) {
@@ -229,8 +293,8 @@ function PlayerCard({ room, you, position, effectivePlaying, lag, behind, member
   }
 
   return (
-    <section ref={card} className={pseudoFs ? 'player pseudo-fs' : 'player'} aria-label="Pemutar" onKeyDown={onCardKey}>
-      <div className="video">
+    <section ref={card} className={pseudoFs ? 'player pseudo-fs' : 'player'} aria-label="Pemutar">
+      <div className={visible ? 'video' : 'video idle'} onMouseMove={poke}>
         {room.media ? (
           <>
             <MediaSurface
@@ -286,75 +350,85 @@ function PlayerCard({ room, you, position, effectivePlaying, lag, behind, member
             </p>
           </div>
         )}
+        {room.media && (
+          <div className={visible ? 'ctl visible' : 'ctl'} onFocusCapture={poke}>
+            <div className="ctl-hit" aria-hidden="true" onPointerUp={onHitUp} onDoubleClick={toggleFullscreen} />
+
+            {hasMedia && (
+              <div className="ctl-center">
+                <button type="button" className="ctl-big" aria-label={playLabel} onClick={togglePlay}>
+                  <PlayIcon pause={showPause} size={30} />
+                </button>
+              </div>
+            )}
+
+            <div className="ctl-bottom">
+              {isLive ? (
+                <span className="ctl-live">
+                  <span className="dot" style={{ background: 'var(--on-video-wait)' }} />
+                  Live dari tab host
+                </span>
+              ) : (
+                <>
+                  <span className="ctl-time tabular">
+                    {clock(shown)} / {length > 0 ? clock(length) : '--:--'}
+                  </span>
+                  <label htmlFor="seek" className="sr-only">
+                    Posisi video
+                  </label>
+                  <input
+                    id="seek"
+                    className="seek"
+                    type="range"
+                    min={0}
+                    max={max}
+                    step={1}
+                    value={Math.min(shown, max)}
+                    style={{ ['--fill' as string]: `${(Math.min(shown, max) / max) * 100}%` }}
+                    onChange={(e) => {
+                      setDrag(Number(e.target.value));
+                      poke();
+                    }}
+                    onPointerUp={commitSeek}
+                    onKeyUp={commitSeek}
+                  />
+                </>
+              )}
+              <div className="ctl-row">
+                {hasMedia && (
+                  <>
+                    <button type="button" className="ctl-btn tabular" aria-label="Mundur 10 detik" onClick={() => seekBy(-10)}>
+                      −10
+                    </button>
+                    <button type="button" className="ctl-btn" aria-label={playLabel} onClick={togglePlay}>
+                      <PlayIcon pause={showPause} size={22} />
+                    </button>
+                    <button type="button" className="ctl-btn tabular" aria-label="Maju 10 detik" onClick={() => seekBy(10)}>
+                      +10
+                    </button>
+                  </>
+                )}
+                <span style={{ flex: '1 1 auto' }} />
+                <button
+                  type="button"
+                  className="ctl-btn"
+                  aria-label={fullscreen ? 'Keluar layar penuh' : 'Layar penuh'}
+                  title={fullscreen ? 'Keluar layar penuh (Esc)' : 'Layar penuh (klik dua kali video)'}
+                  onClick={toggleFullscreen}
+                  autoFocus={pseudoFs}
+                >
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="square" aria-hidden="true">
+                    <path d={fullscreen ? 'M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5' : 'M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5'} />
+                  </svg>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
-      <div className="controls">
-        <label htmlFor="seek" className="sr-only">
-          Posisi video
-        </label>
-        <input
-          id="seek"
-          className="seek"
-          type="range"
-          min={0}
-          max={max}
-          step={1}
-          value={Math.min(shown, max)}
-          disabled={!hasMedia}
-          onChange={(e) => setDrag(Number(e.target.value))}
-          onPointerUp={commitSeek}
-          onKeyUp={commitSeek}
-        />
-
+      <div className="controls player-below">
         <Convoy room={room} position={position} lag={lag} behind={behind} />
-
-        <div className="controls-row">
-          <button
-            type="button"
-            className="play-btn"
-            disabled={!hasMedia}
-            aria-label={finished ? 'Putar lagi dari awal' : showPause ? 'Pause buat semua' : 'Play buat semua'}
-            onClick={() => socket.emit(showPause ? 'control:pause' : 'control:play')}
-          >
-            {showPause ? (
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                <rect x="6" y="5" width="4" height="14" rx="1" />
-                <rect x="14" y="5" width="4" height="14" rx="1" />
-              </svg>
-            ) : (
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                <path d="M8 5.5v13l11-6.5z" />
-              </svg>
-            )}
-          </button>
-          <button type="button" className="btn tabular" style={{ fontWeight: 700 }} disabled={!hasMedia} aria-label="Mundur 10 detik" onClick={() => socket.emit('control:seek', { position: Math.max(0, position - 10) })}>
-            −10
-          </button>
-          <button type="button" className="btn tabular" style={{ fontWeight: 700 }} disabled={!hasMedia} aria-label="Maju 10 detik" onClick={() => socket.emit('control:seek', { position: position + 10 })}>
-            +10
-          </button>
-          {isLive ? (
-            <span style={{ fontWeight: 700, color: 'var(--accent)' }}>Live dari tab host</span>
-          ) : (
-            <span className="tabular">
-              {clock(shown)} <span className="muted">/ {length > 0 ? clock(length) : '--:--'}</span>
-            </span>
-          )}
-          <span style={{ flex: '1 1 auto' }} />
-          {!effectivePlaying && hasMedia && !waiting && !finished && <span className="muted" style={{ fontSize: 14 }}>Di-pause</span>}
-          <button type="button" className={fullscreen ? 'btn btn-primary' : 'btn'} onClick={toggleFullscreen} autoFocus={pseudoFs}>
-            {fullscreen ? (
-              'Keluar layar penuh (Esc)'
-            ) : (
-              <>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="square" aria-hidden="true">
-                  <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" />
-                </svg>
-                Layar penuh
-              </>
-            )}
-          </button>
-        </div>
       </div>
     </section>
   );
