@@ -4,6 +4,7 @@ import { positionAt } from '../../shared/protocol.ts';
 import { serverNow } from '../lib/socket.ts';
 import { isAudioUrl } from '../lib/media.ts';
 import { captureFrom, useHostSource } from '../lib/hostStream.ts';
+import { captionsOn, subscribeCaptions } from '../lib/captions.ts';
 import { RemoteStream } from './RemoteStream.tsx';
 
 /** How far (seconds) a player may drift before we seek it back in line. */
@@ -39,6 +40,8 @@ interface YTPlayer {
   getCurrentTime(): number;
   getDuration(): number;
   setPlaybackRate(rate: number): void;
+  loadModule(name: string): void;
+  unloadModule(name: string): void;
   destroy(): void;
 }
 
@@ -73,8 +76,22 @@ function youtubeEngine(host: HTMLElement, videoId: string, ev: EngineEvents): En
   let isReady = false;
   let state = -1;
   let destroyed = false;
+  let captionsApplied = false;
   const mount = document.createElement('div');
   host.appendChild(mount);
+
+  // YouTube's own controls are hidden, so subtitles follow our CC toggle. Its captions module
+  // only exists once playback has started, hence re-applying on the first "playing" state.
+  const applyCaptions = () => {
+    if (!player || !isReady) return;
+    try {
+      if (captionsOn()) player.loadModule('captions');
+      else player.unloadModule('captions');
+    } catch {
+      /* captions module not available for this video */
+    }
+  };
+  const stopCaptions = subscribeCaptions(applyCaptions);
 
   void loadYouTubeApi().then(() => {
     if (destroyed || !window.YT) return;
@@ -82,14 +99,19 @@ function youtubeEngine(host: HTMLElement, videoId: string, ev: EngineEvents): En
       videoId,
       width: '100%',
       height: '100%',
-      playerVars: { controls: 0, disablekb: 1, rel: 0, playsinline: 1, iv_load_policy: 3, fs: 0 },
+      playerVars: { controls: 0, disablekb: 1, rel: 0, playsinline: 1, iv_load_policy: 3, fs: 0, cc_load_policy: 0 },
       events: {
         onReady: () => {
           isReady = true;
+          applyCaptions();
           ev.onReady();
         },
         onStateChange: (e: { data: number }) => {
           state = e.data;
+          if (e.data === 1 && !captionsApplied) {
+            captionsApplied = true;
+            applyCaptions();
+          }
           ev.onBuffering(e.data === 3);
         },
       },
@@ -107,6 +129,7 @@ function youtubeEngine(host: HTMLElement, videoId: string, ev: EngineEvents): En
     setRate: (r) => player?.setPlaybackRate(r),
     destroy: () => {
       destroyed = true;
+      stopCaptions();
       player?.destroy();
       host.innerHTML = '';
     },
@@ -127,6 +150,11 @@ function htmlEngine(el: HTMLMediaElement, ev: EngineEvents): Engine {
   el.addEventListener('waiting', onWaiting);
   el.addEventListener('playing', onPlaying);
   el.addEventListener('canplay', onCanPlay);
+  const applyCaptions = () => {
+    for (const track of Array.from(el.textTracks)) track.mode = captionsOn() ? 'showing' : 'disabled';
+  };
+  applyCaptions();
+  const stopCaptions = subscribeCaptions(applyCaptions);
   // A cached or local file can already be playable before we attach; canplay won't fire again.
   let alive = true;
   if (isReady) setTimeout(() => alive && ev.onReady(), 0);
@@ -145,6 +173,7 @@ function htmlEngine(el: HTMLMediaElement, ev: EngineEvents): Engine {
     },
     destroy: () => {
       alive = false;
+      stopCaptions();
       el.removeEventListener('waiting', onWaiting);
       el.removeEventListener('playing', onPlaying);
       el.removeEventListener('canplay', onCanPlay);

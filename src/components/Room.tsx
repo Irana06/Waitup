@@ -1,3 +1,4 @@
+import { createPortal } from 'react-dom';
 import {
   useEffect, useMemo, useRef, useState,
   type ChangeEvent, type FormEvent, type KeyboardEvent, type PointerEvent as ReactPointerEvent,
@@ -10,11 +11,31 @@ import { serverNow, socket } from '../lib/socket.ts';
 import { clock, initial } from '../lib/format.ts';
 import { isAudioUrl, parseMediaLink } from '../lib/media.ts';
 import type { Theme } from '../lib/theme.ts';
+import { setCaptions, useCaptions } from '../lib/captions.ts';
+import { AccountButton, FriendsPanel } from './Account.tsx';
 import { Lockup } from './Logo.tsx';
 import { MediaSurface } from './MediaSurface.tsx';
 import { ThemeToggle } from './ThemeToggle.tsx';
 
 const CONTROLS_IDLE_MS = 3000;
+
+const isTouch = () => window.matchMedia('(pointer: coarse)').matches;
+
+type LockableOrientation = ScreenOrientation & { lock?: (o: string) => Promise<void>; unlock?: () => void };
+
+async function lockLandscape(): Promise<void> {
+  const o = screen.orientation as LockableOrientation | undefined;
+  if (!o?.lock) throw new Error('unsupported');
+  await o.lock('landscape');
+}
+
+function unlockOrientation(): void {
+  try {
+    (screen.orientation as LockableOrientation | undefined)?.unlock?.();
+  } catch {
+    /* nothing was locked */
+  }
+}
 
 function PlayIcon({ pause, size }: { pause: boolean; size: number }) {
   return pause ? (
@@ -41,6 +62,7 @@ interface Props {
   theme: Theme;
   onTheme(t: Theme): void;
   onLeave(): void;
+  onJoinFriend(code: string): void;
 }
 
 function useNow(ms: number): number {
@@ -64,7 +86,7 @@ function names(list: string[]): string {
   return `${list.slice(0, -1).join(', ')}, dan ${list[list.length - 1]}`;
 }
 
-export function Room({ room, you, connected, theme, onTheme, onLeave }: Props) {
+export function Room({ room, you, connected, theme, onTheme, onLeave, onJoinFriend }: Props) {
   const now = useNow(250);
   const isHost = room.hostId === you;
   const position = positionAt(room, now);
@@ -86,7 +108,7 @@ export function Room({ room, you, connected, theme, onTheme, onLeave }: Props) {
     return out;
   }, [room, position, now]);
 
-  const behind = room.members.filter((m) => m.buffering || (lag.get(m.id) ?? 0) > LAG_SECONDS);
+  const behind = room.members.filter((m) => m.online && (m.buffering || (lag.get(m.id) ?? 0) > LAG_SECONDS));
 
   // Share state
   const [copied, setCopied] = useState<'code' | 'link' | null>(null);
@@ -103,7 +125,30 @@ export function Room({ room, you, connected, theme, onTheme, onLeave }: Props) {
 
   const [confirmLeave, setConfirmLeave] = useState(false);
   const [giveTo, setGiveTo] = useState<Member | null>(null);
+  // Below this width the panel takes over the source picker, so chat sits right under the video.
+  const compact = useMediaQuery('(max-width: 899px)');
   const request = isHost && room.hostRequest ? room.members.find((m) => m.id === room.hostRequest?.from) : undefined;
+
+  // A host request should not go unnoticed: buzz the phone and flag the tab title until it is answered.
+  const requestKey = request ? `${request.id}:${room.hostRequest?.at}` : '';
+  useEffect(() => {
+    if (!requestKey) return;
+    try {
+      navigator.vibrate?.([120, 80, 120]);
+    } catch {
+      /* vibration not available */
+    }
+    const original = document.title;
+    let flip = false;
+    const timer = setInterval(() => {
+      flip = !flip;
+      document.title = flip ? '(1) Ada yang minta jadi host' : original;
+    }, 1200);
+    return () => {
+      clearInterval(timer);
+      document.title = original;
+    };
+  }, [requestKey]);
 
   return (
     <div>
@@ -124,6 +169,7 @@ export function Room({ room, you, connected, theme, onTheme, onLeave }: Props) {
           <button type="button" className="btn" onClick={() => setConfirmLeave(true)}>
             Keluar
           </button>
+          <AccountButton theme={theme} />
         </div>
       </header>
 
@@ -138,11 +184,10 @@ export function Room({ room, you, connected, theme, onTheme, onLeave }: Props) {
       <div className="layout">
         <main>
           <PlayerCard room={room} you={you} position={position} effectivePlaying={effectivePlaying} lag={lag} behind={behind} memberName={memberName} now={now} />
-          <SourceCard room={room} isHost={isHost} />
+          {!compact && <SourceCard room={room} isHost={isHost} />}
         </main>
         <aside>
-          <People room={room} you={you} lag={lag} onGive={setGiveTo} />
-          <Conversation room={room} you={you} />
+          <Panel room={room} you={you} lag={lag} compact={compact} isHost={isHost} theme={theme} onGive={setGiveTo} onJoinFriend={onJoinFriend} />
         </aside>
       </div>
 
@@ -209,14 +254,29 @@ function PlayerCard({ room, you, position, effectivePlaying, lag, behind, member
   // Fallback for browsers that refuse element fullscreen (iPhone Safari, embedded webviews).
   const [pseudoFs, setPseudoFs] = useState(false);
   const fullscreen = nativeFs || pseudoFs;
+  const captions = useCaptions();
 
   useEffect(() => {
-    const onChange = () => setNativeFs(document.fullscreenElement === card.current);
+    const onChange = () => {
+      const on = document.fullscreenElement === card.current;
+      setNativeFs(on);
+      if (!on) unlockOrientation();
+    };
     document.addEventListener('fullscreenchange', onChange);
     return () => document.removeEventListener('fullscreenchange', onChange);
   }, []);
 
   useEffect(() => setDuration(0), [room.media]);
+
+  // On phones, fullscreen should mean landscape without touching the rotation button.
+  // Android locks the orientation; where that is refused (iPhone), the CSS fallback rotates the player.
+  const [portrait, setPortrait] = useState(() => window.innerHeight > window.innerWidth);
+  useEffect(() => {
+    const onResize = () => setPortrait(window.innerHeight > window.innerWidth);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+  const rotated = pseudoFs && portrait && isTouch();
 
   const toggleFullscreen = async () => {
     if (pseudoFs) return setPseudoFs(false);
@@ -224,6 +284,7 @@ function PlayerCard({ room, you, position, effectivePlaying, lag, behind, member
     try {
       if (!card.current?.requestFullscreen) throw new Error('unsupported');
       await card.current.requestFullscreen();
+      if (isTouch()) await lockLandscape().catch(() => undefined);
     } catch {
       setPseudoFs(true);
     }
@@ -322,7 +383,7 @@ function PlayerCard({ room, you, position, effectivePlaying, lag, behind, member
   }
 
   return (
-    <section ref={card} className={pseudoFs ? 'player pseudo-fs' : 'player'} aria-label="Pemutar">
+    <section ref={card} className={['player', pseudoFs && 'pseudo-fs', rotated && 'rotated'].filter(Boolean).join(' ')} aria-label="Pemutar">
       <div className={visible ? 'video' : 'video idle'} onMouseMove={poke}>
         {room.media ? (
           <>
@@ -438,6 +499,21 @@ function PlayerCard({ room, you, position, effectivePlaying, lag, behind, member
                   </>
                 )}
                 <span style={{ flex: '1 1 auto' }} />
+                {hasMedia && room.media?.kind !== 'stream' && (
+                  <button
+                    type="button"
+                    className={captions ? 'ctl-btn ctl-cc on' : 'ctl-btn ctl-cc'}
+                    aria-pressed={captions}
+                    aria-label="Subtitle"
+                    title={captions ? 'Matikan subtitle (cuma buat kamu)' : 'Nyalakan subtitle (cuma buat kamu)'}
+                    onClick={() => {
+                      setCaptions(!captions);
+                      poke();
+                    }}
+                  >
+                    CC
+                  </button>
+                )}
                 <button
                   type="button"
                   className="ctl-btn"
@@ -517,7 +593,7 @@ function Convoy({ room, position, lag, behind }: { room: RoomState; position: nu
 
 type SourceTab = 'link' | 'file' | 'tab';
 
-function SourceCard({ room, isHost }: { room: RoomState; isHost: boolean }) {
+function SourceCard({ room, isHost, embedded = false }: { room: RoomState; isHost: boolean; embedded?: boolean }) {
   const [tab, setTab] = useState<SourceTab>('link');
   const [link, setLink] = useState('');
   const [error, setError] = useState('');
@@ -588,7 +664,7 @@ function SourceCard({ room, isHost }: { room: RoomState; isHost: boolean }) {
   };
 
   return (
-    <section className="card source-card">
+    <section className={embedded ? 'source-card embedded' : 'card source-card'}>
       <div className="source-top">
         <div style={{ minWidth: 0 }}>
           <div className="muted small">Sedang diputar</div>
@@ -719,25 +795,103 @@ function SourceCard({ room, isHost }: { room: RoomState; isHost: boolean }) {
   );
 }
 
-function People({ room, you, lag, onGive }: { room: RoomState; you: string; lag: Map<string, number>; onGive(m: Member): void }) {
+type PanelTab = 'chat' | 'people' | 'friends' | 'log' | 'source';
+
+function useMediaQuery(query: string): boolean {
+  const [match, setMatch] = useState(() => window.matchMedia(query).matches);
+  useEffect(() => {
+    const mq = window.matchMedia(query);
+    const onChange = () => setMatch(mq.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, [query]);
+  return match;
+}
+
+const TAB_ICONS: Record<PanelTab, string> = {
+  chat: 'M4 5h16v10H9l-5 4z',
+  people: 'M9 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6zm-6 8c0-3 3-5 6-5s6 2 6 5M16 11a2.5 2.5 0 1 0 0-5M18 14c2 .5 3 2 3 5',
+  friends: 'M12 20s-7-4.4-7-9.6A3.9 3.9 0 0 1 12 8a3.9 3.9 0 0 1 7 2.4c0 5.2-7 9.6-7 9.6z',
+  log: 'M5 6h14M5 12h14M5 18h9',
+  source: 'M8 5.5v13l11-6.5z',
+};
+
+interface PanelProps {
+  room: RoomState;
+  you: string;
+  lag: Map<string, number>;
+  compact: boolean;
+  isHost: boolean;
+  theme: Theme;
+  onGive(m: Member): void;
+  onJoinFriend(code: string): void;
+}
+
+/** One navigable panel for chat, people, friends and the log; on phones it also hosts the source picker. */
+function Panel({ room, you, lag, compact, isHost, theme, onGive, onJoinFriend }: PanelProps) {
+  const [tab, setTab] = useState<PanelTab>('chat');
+  const tabs: [PanelTab, string][] = [
+    ['chat', 'Chat'],
+    ['people', 'Orang'],
+    ['friends', 'Teman'],
+    ['log', 'Log'],
+    ...(compact ? ([['source', 'Putar']] as [PanelTab, string][]) : []),
+  ];
+  const active = !compact && tab === 'source' ? 'chat' : tab;
+
+  // Count chat messages that arrive while another tab is open.
+  const chatCount = room.chat.filter((m) => !m.system).length;
+  const [seen, setSeen] = useState(chatCount);
+  useEffect(() => {
+    if (active === 'chat') setSeen(chatCount);
+  }, [active, chatCount]);
+  const unread = Math.max(0, chatCount - seen);
+  const pendingHost = isHost && room.hostRequest !== null;
+
+  return (
+    <section className="card panel">
+      <nav className="panel-nav" role="tablist" aria-label="Panel room">
+        {tabs.map(([id, label]) => (
+          <button key={id} type="button" role="tab" id={`tab-${id}`} aria-selected={active === id} aria-controls="panel-body" onClick={() => setTab(id)}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d={TAB_ICONS[id]} />
+            </svg>
+            <span>{label}</span>
+            {id === 'chat' && unread > 0 && <span className="count">{unread}</span>}
+            {id === 'people' && (pendingHost ? <span className="count">!</span> : <span className="muted tabular small">{room.members.length}</span>)}
+          </button>
+        ))}
+      </nav>
+      <div id="panel-body" className={`panel-body panel-${active}`} role="tabpanel" aria-labelledby={`tab-${active}`}>
+        {active === 'chat' && <ChatPanel room={room} you={you} />}
+        {active === 'people' && <PeoplePanel room={room} you={you} lag={lag} onGive={onGive} />}
+        {active === 'friends' && <FriendsPanel theme={theme} currentRoom={room.code} onJoin={onJoinFriend} />}
+        {active === 'log' && <LogPanel room={room} />}
+        {active === 'source' && <SourceCard room={room} isHost={isHost} embedded />}
+      </div>
+    </section>
+  );
+}
+
+function PeoplePanel({ room, you, lag, onGive }: { room: RoomState; you: string; lag: Map<string, number>; onGive(m: Member): void }) {
   const isHost = room.hostId === you;
   const req = room.hostRequest;
   const mine = req?.from === you;
   const someoneElse = req !== null && !mine;
+  const hostName = room.members.find((m) => m.id === room.hostId)?.name ?? 'host';
 
   return (
-    <section className="card">
-      <div className="card-head">
-        <h2>Di room</h2>
-        <span className="muted">{room.members.length} orang</span>
-      </div>
+    <div className="people-panel">
       <ul className="people">
         {room.members.map((m) => {
           const behind = (lag.get(m.id) ?? 0) > LAG_SECONDS;
           let status = 'Sinkron';
           let color = 'var(--sync)';
           let flagged = false;
-          if (m.buffering) {
+          if (!m.online) {
+            status = 'Nyambung ulang…';
+            color = 'var(--muted)';
+          } else if (m.buffering) {
             status = 'Buffering';
             color = 'var(--accent)';
             flagged = true;
@@ -746,11 +900,11 @@ function People({ room, you, lag, onGive }: { room: RoomState; you: string; lag:
             color = 'var(--accent)';
             flagged = true;
           }
-          const canGive = isHost && m.id !== you;
+          const canGive = isHost && m.id !== you && m.online;
           return (
-            <li key={m.id} className={flagged ? 'person lagging' : 'person'}>
+            <li key={m.id} className={flagged ? 'person lagging' : m.online ? 'person' : 'person offline'}>
               <span className="avatar" style={{ borderColor: flagged ? 'var(--accent)' : 'transparent' }}>
-                {initial(m.name)}
+                {m.picture ? <img src={m.picture} alt="" referrerPolicy="no-referrer" /> : initial(m.name)}
               </span>
               <div className="person-main">
                 <div className="person-name">
@@ -778,7 +932,7 @@ function People({ room, you, lag, onGive }: { room: RoomState; you: string; lag:
         <div className="host-ask">
           {mine ? (
             <>
-              <span className="muted">Nunggu {room.members.find((m) => m.id === room.hostId)?.name ?? 'host'} setuju…</span>
+              <span className="muted">Nunggu {hostName} setuju…</span>
               <button type="button" className="btn btn-sm" onClick={() => socket.emit('host:cancel')}>
                 Batal
               </button>
@@ -786,13 +940,16 @@ function People({ room, you, lag, onGive }: { room: RoomState; you: string; lag:
           ) : someoneElse ? (
             <span className="muted">{room.members.find((m) => m.id === req.from)?.name ?? 'Seseorang'} lagi minta jadi host.</span>
           ) : (
-            <button type="button" className="btn btn-sm" onClick={() => socket.emit('host:request')}>
-              Minta jadi host
-            </button>
+            <>
+              <span className="muted">Mau ngatur video?</span>
+              <button type="button" className="btn btn-sm" onClick={() => socket.emit('host:request')}>
+                Minta jadi host
+              </button>
+            </>
           )}
         </div>
       )}
-    </section>
+    </div>
   );
 }
 
@@ -801,27 +958,20 @@ function hhmm(at: number): string {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
-function Conversation({ room, you }: { room: RoomState; you: string }) {
-  const [tab, setTab] = useState<'chat' | 'log'>('chat');
-  const [draft, setDraft] = useState('');
-  const list = useRef<HTMLDivElement>(null);
-  const messages = room.chat.filter((m) => !m.system);
-  const events = room.chat.filter((m) => m.system);
-  const shown = tab === 'chat' ? messages : events;
-  const myName = room.members.find((m) => m.id === you)?.name;
-
-  // Count chat messages that arrived while the Log tab was open.
-  const [seen, setSeen] = useState(messages.length);
+function useStickToBottom(dep: unknown) {
+  const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (tab === 'chat') setSeen(messages.length);
-  }, [tab, messages.length]);
-  const unread = Math.max(0, messages.length - seen);
-
-  const lastId = shown[shown.length - 1]?.id;
-  useEffect(() => {
-    const el = list.current;
+    const el = ref.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [lastId, tab]);
+  }, [dep]);
+  return ref;
+}
+
+function ChatPanel({ room, you }: { room: RoomState; you: string }) {
+  const [draft, setDraft] = useState('');
+  const messages = room.chat.filter((m) => !m.system);
+  const list = useStickToBottom(messages[messages.length - 1]?.id);
+  const myName = room.members.find((m) => m.id === you)?.name;
 
   const send = (e: FormEvent) => {
     e.preventDefault();
@@ -832,51 +982,45 @@ function Conversation({ room, you }: { room: RoomState; you: string }) {
   };
 
   return (
-    <section className="card convo">
-      <div className="tabs" role="tablist" aria-label="Chat dan log">
-        <button type="button" role="tab" id="tab-chat" aria-selected={tab === 'chat'} aria-controls="panel-convo" onClick={() => setTab('chat')}>
-          Chat
-          {unread > 0 && <span className="count">{unread}</span>}
-        </button>
-        <button type="button" role="tab" id="tab-log" aria-selected={tab === 'log'} aria-controls="panel-convo" onClick={() => setTab('log')}>
-          Log
-        </button>
+    <>
+      <div ref={list} className="convo-list" aria-live="polite">
+        {messages.length === 0 && <p className="muted empty">Belum ada obrolan. Sapa temen-temen kamu.</p>}
+        {messages.map((m) => (
+          <div key={m.id} className={m.from === myName ? 'msg own' : 'msg'}>
+            <div className="msg-head">
+              <strong>{m.from}</strong>
+              <span className="muted">{hhmm(m.at)}</span>
+            </div>
+            <p>{m.text}</p>
+          </div>
+        ))}
       </div>
+      <form onSubmit={send} className="convo-form">
+        <label htmlFor="chat" className="sr-only">
+          Tulis pesan
+        </label>
+        <input id="chat" className="input" maxLength={500} placeholder="Tulis pesan…" autoComplete="off" value={draft} onChange={(e) => setDraft(e.target.value)} />
+        <button type="submit" className="btn btn-primary">
+          Kirim
+        </button>
+      </form>
+    </>
+  );
+}
 
-      <div ref={list} id="panel-convo" className="convo-list" role="tabpanel" aria-labelledby={tab === 'chat' ? 'tab-chat' : 'tab-log'} aria-live="polite">
-        {shown.length === 0 && (
-          <p className="muted empty">{tab === 'chat' ? 'Belum ada obrolan. Sapa temen-temen kamu.' : 'Belum ada kejadian.'}</p>
-        )}
-        {tab === 'chat'
-          ? messages.map((m) => (
-              <div key={m.id} className={m.from === myName ? 'msg own' : 'msg'}>
-                <div className="msg-head">
-                  <strong>{m.from}</strong>
-                  <span className="muted">{hhmm(m.at)}</span>
-                </div>
-                <p>{m.text}</p>
-              </div>
-            ))
-          : events.map((m) => (
-              <div key={m.id} className="event">
-                <span className="muted tabular">{hhmm(m.at)}</span>
-                <span>{m.text}</span>
-              </div>
-            ))}
-      </div>
-
-      {tab === 'chat' && (
-        <form onSubmit={send} className="convo-form">
-          <label htmlFor="chat" className="sr-only">
-            Tulis pesan
-          </label>
-          <input id="chat" className="input" maxLength={500} placeholder="Tulis pesan…" value={draft} onChange={(e) => setDraft(e.target.value)} />
-          <button type="submit" className="btn btn-primary">
-            Kirim
-          </button>
-        </form>
-      )}
-    </section>
+function LogPanel({ room }: { room: RoomState }) {
+  const events = room.chat.filter((m) => m.system);
+  const list = useStickToBottom(events[events.length - 1]?.id);
+  return (
+    <div ref={list} className="convo-list" aria-live="polite">
+      {events.length === 0 && <p className="muted empty">Belum ada kejadian.</p>}
+      {events.map((m) => (
+        <div key={m.id} className="event">
+          <span className="muted tabular">{hhmm(m.at)}</span>
+          <span>{m.text}</span>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -889,7 +1033,31 @@ interface ConfirmProps {
   onConfirm(): void;
 }
 
-function ConfirmDialog({ title, body, confirmLabel, cancelLabel = 'Batal', onCancel, onConfirm }: ConfirmProps) {
+/**
+ * Where overlays must render to be seen: inside the fullscreen element when there is one
+ * (anything outside it is invisible in native fullscreen), else inside the CSS-fullscreen player.
+ */
+function useOverlayTarget(): HTMLElement {
+  const pick = () => (document.fullscreenElement as HTMLElement | null) ?? document.querySelector<HTMLElement>('.player.pseudo-fs') ?? document.body;
+  const [target, setTarget] = useState<HTMLElement>(pick);
+  useEffect(() => {
+    const update = () => setTarget(pick());
+    document.addEventListener('fullscreenchange', update);
+    const obs = new MutationObserver(update);
+    obs.observe(document.body, { subtree: true, attributes: true, attributeFilter: ['class'] });
+    return () => {
+      document.removeEventListener('fullscreenchange', update);
+      obs.disconnect();
+    };
+  }, []);
+  return target;
+}
+
+function ConfirmDialog(props: ConfirmProps) {
+  return createPortal(<ConfirmDialogBody {...props} />, useOverlayTarget());
+}
+
+function ConfirmDialogBody({ title, body, confirmLabel, cancelLabel = 'Batal', onCancel, onConfirm }: ConfirmProps) {
   const onKey = (e: KeyboardEvent) => {
     if (e.key === 'Escape') onCancel();
   };

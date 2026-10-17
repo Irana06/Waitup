@@ -19,9 +19,15 @@ export type RtcSignal =
   | { type: 'ice'; to: 'host' | 'viewer'; candidate: RTCIceCandidateInit };
 
 export interface Member {
+  /** Stable per browser tab (survives refresh), not the socket id. */
   id: string;
   name: string;
   device: string;
+  /** False while the member is reconnecting; they keep their place for a grace period. */
+  online: boolean;
+  /** Set when the member is signed in with Google. */
+  userId?: string;
+  picture?: string;
   buffering: boolean;
   /** Last playback position this member reported, in seconds. */
   position: number;
@@ -92,6 +98,26 @@ export interface ClientToServer {
 export interface ServerToClient {
   'room:state': (s: RoomState) => void;
   'rtc:signal': (p: { from: string; data: RtcSignal }) => void;
+  /** A friend came online, went offline, joined or left a room, or a request changed. */
+  'friends:changed': () => void;
+}
+
+export interface Account {
+  id: string;
+  name: string;
+  email: string | null;
+  picture: string | null;
+  friendCode: string;
+}
+
+export interface FriendEntry {
+  id: string;
+  name: string;
+  picture: string | null;
+  status: 'accepted' | 'incoming' | 'outgoing';
+  online: boolean;
+  /** Where the friend is watching right now, if anywhere. */
+  room: { code: string; hosting: boolean; title: string | null; people: number } | null;
 }
 
 type Clock = Pick<RoomState, 'playback' | 'holdFor' | 'duration'>;

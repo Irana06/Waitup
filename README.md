@@ -18,6 +18,13 @@ Nobar dan dengerin lagu bareng temen, dari PC atau HP. Host bikin room, temen jo
 - **Tema terang dan gelap**, warna dari palet Denia (lihat `brand/README.md`).
 - Chat dan daftar peserta.
 
+### Akun, teman, dan room yang tahan refresh
+
+- **Tamu tetap bisa pakai semuanya.** Login Google cuma menambah daftar teman: tambah teman pakai kode (misalnya `ABCD-2345`), lihat siapa yang online dan lagi nge-host apa, lalu join sekali klik.
+- Login memakai Google Identity Services. Server cuma butuh `GOOGLE_CLIENT_ID` (publik, isi di `.env`, lihat `.env.example`); token Google diverifikasi dengan kunci publik Google. Akun, sesi, dan pertemanan disimpan di SQLite bawaan Node (`data/waitup.db`).
+- **Refresh atau koneksi putus nggak bikin keluar room.** Tiap tab punya ID sendiri (`sessionStorage`), jadi reload kembali ke kursi yang sama, termasuk peran host. Orang yang putus ditahan 90 detik sebelum dikeluarkan.
+- **Restart server (misalnya update) nggak menghapus room.** Room disimpan ke `data/rooms.json` dan dipulihkan saat server nyala; semua orang dapat waktu 3 menit untuk nyambung lagi. Stream file/tab perlu dimulai ulang.
+
 ### Batasan streaming (file dari PC dan share tab)
 
 - Koneksinya langsung antar-browser: host mengirim satu salinan video ke tiap penonton, jadi enaknya sampai sekitar 5 penonton. Kualitas ngikut kecepatan upload host.
@@ -76,4 +83,4 @@ Update berikutnya: `sh deploy/update.sh`.
 3. Tiap 0,4 detik pemutar dibandingkan dengan posisi room. Selisih di atas 0,75 detik langsung di-seek. Untuk file langsung, selisih kecil dikoreksi dengan kecepatan 0,95x atau 1,05x.
 4. Buffering yang lebih lama dari 0,6 detik dilaporkan ke server. Dalam mode "Tunggu semua" server membekukan jam room sampai semua yang ditunggu melapor siap.
 
-State room cuma disimpan di memori, jadi room hilang kalau server restart. Room kosong dihapus setelah 5 menit.
+Room kosong dihapus setelah 5 menit.

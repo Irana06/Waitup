@@ -23,6 +23,12 @@ const HOST_REQUEST_TTL_MS = 2 * 60 * 1000;
 
 const rooms = new Map<string, Room>();
 let msgSeq = 0;
+// Message ids stay unique across restarts, since restored rooms keep their chat.
+const msgId = () => `m${Date.now().toString(36)}${(++msgSeq).toString(36)}`;
+
+export function listRooms(): Room[] {
+  return [...rooms.values()];
+}
 
 function newCode(): string {
   for (let i = 0; i < 50; i++) {
@@ -71,11 +77,11 @@ export function snapshot(room: Room): RoomState {
 }
 
 export function system(room: Room, text: string): void {
-  pushChat(room, { id: `m${++msgSeq}`, at: Date.now(), system: true, text });
+  pushChat(room, { id: msgId(), at: Date.now(), system: true, text });
 }
 
 export function say(room: Room, from: string, text: string): void {
-  pushChat(room, { id: `m${++msgSeq}`, at: Date.now(), system: false, from, text });
+  pushChat(room, { id: msgId(), at: Date.now(), system: false, from, text });
 }
 
 function pushChat(room: Room, msg: ChatMessage): void {
@@ -104,11 +110,30 @@ function rebase(room: Room): void {
   room.playback.updatedAt = Date.now();
 }
 
-export function addMember(room: Room, member: Member): void {
-  room.members.set(member.id, member);
+/**
+ * Adds a member, or reattaches one who refreshed or reconnected (same id) without a fresh
+ * "join" entry. Returns true for a genuinely new member.
+ */
+export function addMember(room: Room, member: Member): boolean {
+  const existing = room.members.get(member.id);
   room.emptySince = null;
-  if (!room.hostId) room.hostId = member.id;
+  if (existing) {
+    Object.assign(existing, { name: member.name, device: member.device, userId: member.userId, picture: member.picture, online: true });
+    return false;
+  }
+  room.members.set(member.id, member);
+  if (!room.hostId || !room.members.has(room.hostId)) room.hostId = member.id;
   system(room, `${member.name} join dari ${member.device}`);
+  return true;
+}
+
+/** The member's connection dropped. They keep their place (and host role) until removed. */
+export function setOffline(room: Room, id: string): void {
+  const m = room.members.get(id);
+  if (!m) return;
+  m.online = false;
+  release(room, id);
+  m.buffering = false;
 }
 
 export function removeMember(room: Room, id: string): void {
@@ -253,4 +278,44 @@ export function sweepEmptyRooms(): void {
   for (const [code, room] of rooms) {
     if (room.emptySince !== null && now - room.emptySince > EMPTY_ROOM_TTL_MS) rooms.delete(code);
   }
+}
+
+/** Plain data for the room file; live-only state (streams, holds, requests) is left out. */
+export function serializeRooms(): unknown[] {
+  return listRooms().map((r) => ({
+    code: r.code,
+    hostId: r.hostId,
+    members: [...r.members.values()],
+    media: r.media?.kind === 'stream' ? null : r.media,
+    duration: r.media?.kind === 'stream' ? null : r.duration,
+    playback: r.media?.kind === 'stream' ? { playing: false, position: 0, updatedAt: Date.now() } : r.playback,
+    mode: r.mode,
+    chat: r.chat,
+    emptySince: r.emptySince,
+  }));
+}
+
+/** Restores rooms after a restart. Everyone starts offline until their browser reconnects. */
+export function restoreRooms(data: unknown): Room[] {
+  if (!Array.isArray(data)) return [];
+  const restored: Room[] = [];
+  for (const raw of data as Partial<Room & { members: Member[] }>[]) {
+    if (!raw?.code || rooms.has(raw.code) || !Array.isArray(raw.members)) continue;
+    const room: Room = {
+      code: raw.code,
+      hostId: raw.hostId ?? '',
+      members: new Map(raw.members.map((m) => [m.id, { ...m, online: false, buffering: false }])),
+      media: raw.media ?? null,
+      duration: raw.duration ?? null,
+      playback: raw.playback ?? { playing: false, position: 0, updatedAt: Date.now() },
+      mode: raw.mode === 'catch' ? 'catch' : 'wait',
+      holdFor: new Set(),
+      hostRequest: null,
+      chat: Array.isArray(raw.chat) ? raw.chat : [],
+      emptySince: raw.members.length === 0 ? Date.now() : null,
+    };
+    rooms.set(room.code, room);
+    restored.push(room);
+  }
+  return restored;
 }

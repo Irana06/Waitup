@@ -1,23 +1,44 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { RoomState } from '../shared/protocol.ts';
-import { socket } from './lib/socket.ts';
+import { clientId, socket } from './lib/socket.ts';
 import { deviceLabel } from './lib/format.ts';
 import { useTheme } from './lib/theme.ts';
 import { stopHosting } from './lib/hostStream.ts';
+import { loadAccount, useAccount } from './lib/account.ts';
 import { Home } from './components/Home.tsx';
 import { Room } from './components/Room.tsx';
+import { Privacy } from './components/Privacy.tsx';
 
 const NAME_KEY = 'waitup:name';
+/** The room this tab is in, kept across refreshes so a reload walks straight back in. */
+const SESSION_KEY = 'waitup:session';
 
 interface Session {
   code: string;
   name: string;
-  you: string;
 }
 
 function codeFromPath(): string {
   const m = location.pathname.match(/^\/(\d{6})\/?$/);
   return m ? m[1] : '';
+}
+
+function read<T>(storage: Storage, key: string): T | null {
+  try {
+    const raw = storage.getItem(key);
+    return raw ? (JSON.parse(raw) as T) : null;
+  } catch {
+    return null;
+  }
+}
+
+function write(storage: Storage, key: string, value: unknown) {
+  try {
+    if (value === null) storage.removeItem(key);
+    else storage.setItem(key, JSON.stringify(value));
+  } catch {
+    /* storage unavailable: refresh won't auto-rejoin */
+  }
 }
 
 function savedName(): string {
@@ -30,51 +51,67 @@ function savedName(): string {
 
 export function App() {
   const [theme, setTheme] = useTheme();
+  const { user } = useAccount();
   const [connected, setConnected] = useState(socket.connected);
-  const [session, setSession] = useState<Session | null>(null);
+  // Resume the room from before a refresh, as long as the address still points at it.
+  const [session, setSession] = useState<Session | null>(() => {
+    const s = read<Session>(sessionStorage, SESSION_KEY);
+    return s && (codeFromPath() === s.code || codeFromPath() === '') ? s : null;
+  });
   const [room, setRoom] = useState<RoomState | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const sessionRef = useRef(session);
   sessionRef.current = session;
 
-  const remember = (name: string) => {
-    try {
-      localStorage.setItem(NAME_KEY, name);
-    } catch {
-      /* not remembered, that's fine */
-    }
-  };
+  useEffect(() => {
+    void loadAccount();
+  }, []);
 
-  const enter = useCallback((code: string, name: string, you: string) => {
-    setSession({ code, name, you });
+  const enter = useCallback((code: string, name: string) => {
+    const s = { code, name };
+    setSession(s);
+    write(sessionStorage, SESSION_KEY, s);
     setError('');
     if (location.pathname !== `/${code}`) history.pushState(null, '', `/${code}`);
+  }, []);
+
+  const forget = useCallback(() => {
+    setSession(null);
+    setRoom(null);
+    write(sessionStorage, SESSION_KEY, null);
   }, []);
 
   const join = useCallback(
     (code: string, name: string) => {
       setBusy(true);
-      remember(name);
+      try {
+        localStorage.setItem(NAME_KEY, name);
+      } catch {
+        /* name not remembered */
+      }
       socket.emit('room:join', { code, name, device: deviceLabel() }, (res) => {
         setBusy(false);
-        if (res.ok) enter(res.data.code, name, res.data.you);
+        if (res.ok) enter(res.data.code, name);
         else {
           setError(res.error);
-          setSession(null);
-          setRoom(null);
+          forget();
         }
       });
     },
-    [enter],
+    [enter, forget],
   );
 
   const create = (name: string) => {
     setBusy(true);
-    remember(name);
+    try {
+      localStorage.setItem(NAME_KEY, name);
+    } catch {
+      /* name not remembered */
+    }
     socket.emit('room:create', { name, device: deviceLabel() }, (res) => {
       setBusy(false);
-      if (res.ok) enter(res.data.code, name, res.data.you);
+      if (res.ok) enter(res.data.code, name);
       else setError(res.error);
     });
   };
@@ -82,15 +119,26 @@ export function App() {
   const leave = () => {
     stopHosting();
     socket.emit('room:leave');
-    setSession(null);
-    setRoom(null);
+    forget();
     history.pushState(null, '', '/');
+  };
+
+  /** Join a friend's room from the friend list, leaving the current one first. */
+  const joinFriend = (code: string) => {
+    if (sessionRef.current?.code === code) return;
+    const name = sessionRef.current?.name || savedName() || user?.name.slice(0, 24) || 'Tamu';
+    if (sessionRef.current) {
+      stopHosting();
+      socket.emit('room:leave');
+      setRoom(null);
+    }
+    join(code, name);
   };
 
   useEffect(() => {
     const onConnect = () => {
       setConnected(true);
-      // A reconnect gets a new socket id, so walk back into the room we were in.
+      // Same tab id as before, so the server hands back the same seat (and host role).
       const s = sessionRef.current;
       if (s) join(s.code, s.name);
     };
@@ -99,37 +147,43 @@ export function App() {
     const onPop = () => {
       if (!codeFromPath() && sessionRef.current) {
         socket.emit('room:leave');
-        setSession(null);
-        setRoom(null);
+        forget();
       }
     };
     socket.on('connect', onConnect);
     socket.on('disconnect', onDisconnect);
     socket.on('room:state', onState);
     window.addEventListener('popstate', onPop);
+    if (socket.connected) onConnect();
     return () => {
       socket.off('connect', onConnect);
       socket.off('disconnect', onDisconnect);
       socket.off('room:state', onState);
       window.removeEventListener('popstate', onPop);
     };
-  }, [join]);
+  }, [join, forget]);
+
+  if (location.pathname === '/privasi') return <Privacy />;
 
   if (session && room && room.code === session.code) {
-    return <Room room={room} you={session.you} connected={connected} theme={theme} onTheme={setTheme} onLeave={leave} />;
+    return (
+      <Room room={room} you={clientId} connected={connected} theme={theme} onTheme={setTheme} onLeave={leave} onJoinFriend={joinFriend} />
+    );
   }
 
   return (
     <Home
       theme={theme}
       onTheme={setTheme}
-      initialName={savedName()}
+      initialName={savedName() || user?.name.slice(0, 24) || ''}
       initialCode={codeFromPath()}
       connected={connected}
       error={error}
-      busy={busy || (session !== null && room === null)}
+      busy={busy || session !== null}
+      resuming={session !== null}
       onCreate={create}
       onJoin={join}
+      onJoinFriend={joinFriend}
     />
   );
 }

@@ -1,6 +1,8 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { Lockup } from './Logo.tsx';
 import { ThemeToggle } from './ThemeToggle.tsx';
+import { AccountButton, FriendsPanel } from './Account.tsx';
+import { useAccount } from '../lib/account.ts';
 import type { Theme } from '../lib/theme.ts';
 
 interface Props {
@@ -11,12 +13,19 @@ interface Props {
   connected: boolean;
   error: string;
   busy: boolean;
+  /** True while a refreshed tab is walking back into its room. */
+  resuming: boolean;
   onCreate(name: string): void;
   onJoin(code: string, name: string): void;
+  onJoinFriend(code: string): void;
 }
 
-export function Home({ theme, onTheme, initialName, initialCode, connected, error, busy, onCreate, onJoin }: Props) {
+export function Home({ theme, onTheme, initialName, initialCode, connected, error, busy, resuming, onCreate, onJoin, onJoinFriend }: Props) {
+  const { user, googleClientId } = useAccount();
   const [name, setName] = useState(initialName);
+  useEffect(() => {
+    if (user && !name) setName(user.name.slice(0, 24));
+  }, [user, name]);
   const [code, setCode] = useState(initialCode);
   const [nameError, setNameError] = useState('');
   const [codeError, setCodeError] = useState('');
@@ -50,8 +59,18 @@ export function Home({ theme, onTheme, initialName, initialCode, connected, erro
     <div className="home">
       <header className="app-header">
         <Lockup height={30} />
-        <ThemeToggle theme={theme} onChange={onTheme} />
+        <div className="header-actions">
+          <ThemeToggle theme={theme} onChange={onTheme} />
+          <AccountButton theme={theme} />
+        </div>
       </header>
+
+      {resuming && (
+        <div className="banner" role="status">
+          <span className="dot pulse" style={{ background: 'var(--accent)' }} />
+          Masuk lagi ke room kamu…
+        </div>
+      )}
 
       <main className="home-main">
         <div className="home-hero">
@@ -128,6 +147,13 @@ export function Home({ theme, onTheme, initialName, initialCode, connected, erro
             </button>
           </form>
         </div>
+
+        {(user || googleClientId) && (
+          <section className="card home-friends">
+            <h2>Teman</h2>
+            <FriendsPanel theme={theme} onJoin={onJoinFriend} />
+          </section>
+        )}
       </main>
     </div>
   );

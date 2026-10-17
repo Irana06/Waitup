@@ -13,6 +13,7 @@
   "dependencies": {
     "cross-env": "^10.1.0",
     "express": "^5.3.0",
+    "jose": "^6.2.12",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "socket.io": "^4.8.4",
