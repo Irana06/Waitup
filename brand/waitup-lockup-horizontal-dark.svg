@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 267 70" role="img" aria-label="Waitup">
+  <g fill="#B79CF5">
+    <circle cx="21" cy="13" r="6"/>
+    <rect x="14" y="22" width="14" height="34" rx="7"/>
+  </g>
+  <g fill="#F58BC8">
+    <circle cx="43" cy="24" r="6"/>
+    <rect x="36" y="33" width="14" height="23" rx="7"/>
+  </g>
+  <g transform="translate(66 8)">
+    <g fill="none" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
+      <g stroke="#B79CF5">
+        <path d="M3.5 23.5V36A8.5 8.5 0 0 0 20.5 36V23.5V36A8.5 8.5 0 0 0 37.5 36V23.5"/>
+        <circle cx="64" cy="34" r="10.5"/>
+        <path d="M74.5 23.5V44.5"/>
+        <path d="M90.5 23.5V44.5"/>
+        <path d="M109.5 12V38A6.5 6.5 0 0 0 116 44.5H119.5M104.5 23.5H118.5"/>
+      </g>
+      <g stroke="#F58BC8">
+        <path d="M133.5 23.5V36A8.5 8.5 0 0 0 150.5 36V23.5V44.5"/>
+        <path d="M166.5 23.5V58"/>
+        <circle cx="177" cy="34" r="10.5"/>
+      </g>
+    </g>
+    <circle cx="90.5" cy="12" r="4.5" fill="#B79CF5"/>
+  </g>
+</svg>

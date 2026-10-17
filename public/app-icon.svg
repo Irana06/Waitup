@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Waitup">
+  <rect width="512" height="512" rx="112" fill="#08121A"/>
+  <g transform="translate(64 67) scale(6)">
+    <g fill="#B79CF5">
+      <circle cx="21" cy="13" r="6"/>
+      <rect x="14" y="22" width="14" height="34" rx="7"/>
+    </g>
+    <g fill="#F58BC8">
+      <circle cx="43" cy="24" r="6"/>
+      <rect x="36" y="33" width="14" height="23" rx="7"/>
+    </g>
+  </g>
+</svg>

@@ -1,0 +1,619 @@
+import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
+import type { Member, RoomState } from '../../shared/protocol.ts';
+import { hasEnded, positionAt } from '../../shared/protocol.ts';
+import { serverNow, socket } from '../lib/socket.ts';
+import { clock, initial } from '../lib/format.ts';
+import { isAudioUrl, parseMediaLink } from '../lib/media.ts';
+import type { Theme } from '../lib/theme.ts';
+import { Lockup } from './Logo.tsx';
+import { MediaSurface } from './MediaSurface.tsx';
+import { ThemeToggle } from './ThemeToggle.tsx';
+
+/** A member this far behind the room (seconds) counts as left behind. */
+const LAG_SECONDS = 1.5;
+/** Width of the convoy strip, in seconds behind the room position. */
+const CONVOY_WINDOW = 20;
+
+interface Props {
+  room: RoomState;
+  you: string;
+  connected: boolean;
+  theme: Theme;
+  onTheme(t: Theme): void;
+  onLeave(): void;
+}
+
+function useNow(ms: number): number {
+  const [now, setNow] = useState(serverNow);
+  useEffect(() => {
+    const t = setInterval(() => setNow(serverNow()), ms);
+    return () => clearInterval(t);
+  }, [ms]);
+  return now;
+}
+
+/** Where a member probably is right now, from their last report. */
+function projected(m: Member, room: RoomState, now: number): number {
+  const moving = room.playback.playing && room.holdFor.length === 0 && !m.buffering;
+  const pos = moving ? m.position + Math.max(0, now - m.reportedAt) / 1000 : m.position;
+  return room.duration ? Math.min(pos, room.duration) : pos;
+}
+
+function names(list: string[]): string {
+  if (list.length <= 2) return list.join(' dan ');
+  return `${list.slice(0, -1).join(', ')}, dan ${list[list.length - 1]}`;
+}
+
+export function Room({ room, you, connected, theme, onTheme, onLeave }: Props) {
+  const now = useNow(250);
+  const isHost = room.hostId === you;
+  const position = positionAt(room, now);
+  const effectivePlaying = room.playback.playing && room.holdFor.length === 0;
+  const memberName = (id: string) => room.members.find((m) => m.id === id)?.name ?? 'Seseorang';
+
+  const lag = useMemo(() => {
+    const out = new Map<string, number>();
+    if (!room.media) return out;
+    for (const m of room.members) out.set(m.id, Math.max(0, position - projected(m, room, now)));
+    return out;
+  }, [room, position, now]);
+
+  const behind = room.members.filter((m) => m.buffering || (lag.get(m.id) ?? 0) > LAG_SECONDS);
+
+  // Share state
+  const [copied, setCopied] = useState<'code' | 'link' | null>(null);
+  const copy = async (what: 'code' | 'link') => {
+    const text = what === 'code' ? room.code : `${location.origin}/${room.code}`;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(what);
+      setTimeout(() => setCopied(null), 1500);
+    } catch {
+      window.prompt('Salin ini:', text);
+    }
+  };
+
+  const [confirmLeave, setConfirmLeave] = useState(false);
+
+  return (
+    <div>
+      <header className="app-header">
+        <Lockup height={36} />
+        <div className="header-actions">
+          <div className="room-code">
+            <span className="muted" style={{ fontSize: 14 }}>
+              Kode room
+            </span>
+            <strong className="tabular">
+              {room.code.slice(0, 3)} {room.code.slice(3)}
+            </strong>
+            <button type="button" className="btn btn-quiet" style={{ fontSize: 14 }} onClick={() => copy('code')}>
+              {copied === 'code' ? 'Tersalin' : 'Salin'}
+            </button>
+          </div>
+          <button type="button" className="btn btn-primary" onClick={() => copy('link')}>
+            {copied === 'link' ? 'Link tersalin' : 'Undang temen'}
+          </button>
+          <ThemeToggle theme={theme} onChange={onTheme} />
+          <button type="button" className="btn" onClick={() => setConfirmLeave(true)}>
+            Keluar
+          </button>
+        </div>
+      </header>
+
+      {!connected && (
+        <div className="banner" role="status">
+          <span className="dot pulse" style={{ background: 'var(--error)', width: 10, height: 10 }} />
+          <strong style={{ color: 'var(--error)' }}>Koneksi kamu ke room putus.</strong>
+          <span className="muted">Nyambung ulang… Nanti posisinya disamain ke host.</span>
+        </div>
+      )}
+
+      <div className="layout">
+        <main>
+          <PlayerCard room={room} you={you} position={position} effectivePlaying={effectivePlaying} lag={lag} behind={behind} memberName={memberName} now={now} />
+          <SourceCard room={room} isHost={isHost} />
+        </main>
+        <aside>
+          <People room={room} you={you} lag={lag} />
+          <Chat room={room} />
+        </aside>
+      </div>
+
+      {confirmLeave && (
+        <LeaveDialog
+          onCancel={() => setConfirmLeave(false)}
+          onConfirm={() => {
+            setConfirmLeave(false);
+            onLeave();
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+interface PlayerCardProps {
+  room: RoomState;
+  you: string;
+  position: number;
+  effectivePlaying: boolean;
+  lag: Map<string, number>;
+  behind: Member[];
+  memberName(id: string): string;
+  now: number;
+}
+
+function PlayerCard({ room, you, position, effectivePlaying, lag, behind, memberName, now }: PlayerCardProps) {
+  const card = useRef<HTMLElement>(null);
+  const [duration, setDuration] = useState(0);
+  const [drag, setDrag] = useState<number | null>(null);
+  const [nativeFs, setNativeFs] = useState(false);
+  // Fallback for browsers that refuse element fullscreen (iPhone Safari, embedded webviews).
+  const [pseudoFs, setPseudoFs] = useState(false);
+  const fullscreen = nativeFs || pseudoFs;
+
+  useEffect(() => {
+    const onChange = () => setNativeFs(document.fullscreenElement === card.current);
+    document.addEventListener('fullscreenchange', onChange);
+    return () => document.removeEventListener('fullscreenchange', onChange);
+  }, []);
+
+  useEffect(() => setDuration(0), [room.media]);
+
+  const toggleFullscreen = async () => {
+    if (pseudoFs) return setPseudoFs(false);
+    if (document.fullscreenElement) return void document.exitFullscreen().catch(() => undefined);
+    try {
+      if (!card.current?.requestFullscreen) throw new Error('unsupported');
+      await card.current.requestFullscreen();
+    } catch {
+      setPseudoFs(true);
+    }
+  };
+
+  const onCardKey = (e: KeyboardEvent) => {
+    if (e.key === 'Escape' && pseudoFs) setPseudoFs(false);
+  };
+
+  const hasMedia = room.media !== null;
+  const waiting = room.holdFor.length > 0;
+  const heldOnMe = room.holdFor.includes(you);
+  const length = room.duration ?? duration;
+  const finished = hasEnded(room, now);
+  const showPause = room.playback.playing && !finished;
+  const shown = drag ?? position;
+  const max = Math.max(length, position, 1);
+
+  const sentDuration = useRef<string | null>(null);
+  const reportDuration = (d: number) => {
+    setDuration(d);
+    const key = JSON.stringify(room.media);
+    if (room.duration === null && sentDuration.current !== key) {
+      sentDuration.current = key;
+      socket.emit('media:duration', { duration: d });
+    }
+  };
+
+  const commitSeek = () => {
+    if (drag !== null) socket.emit('control:seek', { position: drag });
+    setDrag(null);
+  };
+
+  let chipText = 'Semua sinkron';
+  let chipColor = 'var(--on-video-sync)';
+  if (waiting) {
+    chipText = `Nungguin ${room.holdFor.length} orang`;
+    chipColor = 'var(--on-video-wait)';
+  } else if (behind.length > 0) {
+    chipText = `${names(behind.map((m) => m.name))} lagi nyusul`;
+    chipColor = 'var(--on-video-wait)';
+  } else if (finished) {
+    chipText = 'Selesai';
+  } else if (!room.playback.playing) {
+    chipText = 'Di-pause, semua sinkron';
+  }
+
+  return (
+    <section ref={card} className={pseudoFs ? 'player pseudo-fs' : 'player'} aria-label="Pemutar" onKeyDown={onCardKey}>
+      <div className="video">
+        {room.media ? (
+          <>
+            <MediaSurface
+              media={room.media}
+              room={room}
+              you={you}
+              onBuffering={(p) => socket.emit('status:buffering', { position: p })}
+              onReady={(p) => socket.emit('status:ready', { position: p })}
+              onPosition={(p) => socket.emit('status:position', { position: p })}
+              onDuration={reportDuration}
+            />
+            {room.media.kind === 'url' && isAudioUrl(room.media.url) && (
+              <div className="video-empty">
+                <span className="display" style={{ fontSize: 24 }}>
+                  Lagi muter lagu
+                </span>
+                <p>{room.media.title}</p>
+              </div>
+            )}
+            <div className="chip">
+              <span className="dot" style={{ background: chipColor }} />
+              {chipText}
+            </div>
+          </>
+        ) : (
+          <div className="video-empty">
+            <span className="display" style={{ fontSize: 28 }}>
+              Belum ada yang diputar
+            </span>
+            <p>Host tinggal tempel link YouTube atau link file di bawah.</p>
+          </div>
+        )}
+
+        {waiting && (
+          <div className="wait-overlay" role="status">
+            {[
+              [12, 22, 0],
+              [24, 12, 1.4],
+              [71, 30, 0.6],
+              [84, 14, 2.2],
+              [55, 10, 3],
+            ].map(([left, size, delay]) => (
+              <span key={left} className="bubble" aria-hidden="true" style={{ left: `${left}%`, width: size, height: size, animationDelay: `${delay}s` }} />
+            ))}
+            <svg className="spin" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="3" strokeLinecap="round" aria-hidden="true">
+              <path d="M21 12a9 9 0 1 1-9-9" />
+            </svg>
+            <h2>Wait up!</h2>
+            <p>
+              {heldOnMe
+                ? 'Koneksi kamu lagi buffering. Yang lain nungguin kamu.'
+                : `Nungguin ${names(room.holdFor.map(memberName))} buffering… video di-pause buat semua orang.`}
+            </p>
+          </div>
+        )}
+      </div>
+
+      <div className="controls">
+        <label htmlFor="seek" className="sr-only">
+          Posisi video
+        </label>
+        <input
+          id="seek"
+          className="seek"
+          type="range"
+          min={0}
+          max={max}
+          step={1}
+          value={Math.min(shown, max)}
+          disabled={!hasMedia}
+          onChange={(e) => setDrag(Number(e.target.value))}
+          onPointerUp={commitSeek}
+          onKeyUp={commitSeek}
+        />
+
+        <Convoy room={room} position={position} lag={lag} behind={behind} />
+
+        <div className="controls-row">
+          <button
+            type="button"
+            className="play-btn"
+            disabled={!hasMedia}
+            aria-label={finished ? 'Putar lagi dari awal' : showPause ? 'Pause buat semua' : 'Play buat semua'}
+            onClick={() => socket.emit(showPause ? 'control:pause' : 'control:play')}
+          >
+            {showPause ? (
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <rect x="6" y="5" width="4" height="14" rx="1" />
+                <rect x="14" y="5" width="4" height="14" rx="1" />
+              </svg>
+            ) : (
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <path d="M8 5.5v13l11-6.5z" />
+              </svg>
+            )}
+          </button>
+          <button type="button" className="btn tabular" style={{ fontWeight: 700 }} disabled={!hasMedia} aria-label="Mundur 10 detik" onClick={() => socket.emit('control:seek', { position: Math.max(0, position - 10) })}>
+            −10
+          </button>
+          <button type="button" className="btn tabular" style={{ fontWeight: 700 }} disabled={!hasMedia} aria-label="Maju 10 detik" onClick={() => socket.emit('control:seek', { position: position + 10 })}>
+            +10
+          </button>
+          <span className="tabular">
+            {clock(shown)} <span className="muted">/ {length > 0 ? clock(length) : '--:--'}</span>
+          </span>
+          <span style={{ flex: '1 1 auto' }} />
+          {!effectivePlaying && hasMedia && !waiting && !finished && <span className="muted" style={{ fontSize: 14 }}>Di-pause</span>}
+          <button type="button" className={fullscreen ? 'btn btn-primary' : 'btn'} onClick={toggleFullscreen} autoFocus={pseudoFs}>
+            {fullscreen ? (
+              'Keluar layar penuh (Esc)'
+            ) : (
+              <>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="square" aria-hidden="true">
+                  <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" />
+                </svg>
+                Layar penuh
+              </>
+            )}
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function Convoy({ room, position, lag, behind }: { room: RoomState; position: number; lag: Map<string, number>; behind: Member[] }) {
+  const leftFor = (secondsBehind: number) => Math.max(4, Math.min(92, 88 - (secondsBehind / CONVOY_WINDOW) * 84));
+  const lagging = new Set(behind.map((m) => m.id));
+  const front = room.members.filter((m) => !lagging.has(m.id));
+  const groups: { key: string; left: number; members: Member[]; lagging: boolean }[] = [];
+  if (front.length) groups.push({ key: 'front', left: leftFor(0), members: front, lagging: false });
+  for (const m of behind) groups.push({ key: m.id, left: leftFor(lag.get(m.id) ?? 0), members: [m], lagging: true });
+
+  let label = 'Belum jalan';
+  let color = 'var(--muted)';
+  if (room.media) {
+    if (room.holdFor.length > 0) {
+      label = 'Semua nungguin';
+      color = 'var(--accent)';
+    } else if (behind.length > 0) {
+      const worst = behind.reduce((a, b) => ((lag.get(a.id) ?? 0) >= (lag.get(b.id) ?? 0) ? a : b));
+      label = `${worst.name} ketinggalan ${(lag.get(worst.id) ?? 0).toFixed(1).replace('.', ',')} dtk`;
+      color = 'var(--accent)';
+    } else {
+      label = 'Semua di detik yang sama';
+      color = 'var(--sync)';
+    }
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', gap: 8, fontSize: 14 }}>
+        <span style={{ fontWeight: 700 }}>Rombongan</span>
+        <span style={{ color }}>{label}</span>
+      </div>
+      <div className="convoy-track" aria-hidden="true" data-position={Math.floor(position)}>
+        <div className="convoy-line" />
+        {groups.map((g) => (
+          <div key={g.key} className="convoy-pos" style={{ transform: `translateX(${g.left}%)` }}>
+            <div className="convoy-group">
+              {g.members.map((m) => (
+                <span key={m.id} className={g.lagging ? 'convoy-bubble lagging' : 'convoy-bubble'}>
+                  {initial(m.name)}
+                </span>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }} className="muted">
+        <span>{CONVOY_WINDOW} detik di belakang</span>
+        <span>Posisi room</span>
+      </div>
+    </div>
+  );
+}
+
+function SourceCard({ room, isHost }: { room: RoomState; isHost: boolean }) {
+  const [link, setLink] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setError('');
+    const parsed = await parseMediaLink(link);
+    if (!parsed.ok) {
+      setError(parsed.error);
+      setBusy(false);
+      return;
+    }
+    socket.emit('media:set', { media: parsed.media }, (res) => {
+      setBusy(false);
+      if (res.ok) setLink('');
+      else setError(res.error);
+    });
+  };
+
+  return (
+    <section className="card" style={{ display: 'flex', flexDirection: 'column', gap: 16, padding: 24 }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16 }}>
+        <div style={{ minWidth: 0 }}>
+          <div className="muted" style={{ fontSize: 14 }}>
+            Sedang diputar oleh host
+          </div>
+          <h1 style={{ fontSize: 26, overflowWrap: 'anywhere' }}>{room.media?.title ?? 'Belum ada video'}</h1>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <span className="muted" style={{ fontSize: 14 }}>
+            Kalau ada yang ngelag{isHost ? '' : ' (diatur host)'}
+          </span>
+          <div className="seg" role="group" aria-label="Mode sinkron">
+            <button type="button" aria-pressed={room.mode === 'wait'} disabled={!isHost} onClick={() => socket.emit('mode:set', { mode: 'wait' })}>
+              Tunggu semua
+            </button>
+            <button type="button" aria-pressed={room.mode === 'catch'} disabled={!isHost} onClick={() => socket.emit('mode:set', { mode: 'catch' })}>
+              Yang ngelag ngejar
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div role="group" aria-label="Sumber video" style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+        <span className="btn" style={{ background: 'var(--ink)', color: 'var(--bg)', borderColor: 'var(--ink)', cursor: 'default' }}>
+          Link YouTube / URL
+        </span>
+        <button type="button" className="btn" disabled>
+          File dari PC (segera hadir)
+        </button>
+        <button type="button" className="btn" disabled>
+          Share tab (segera hadir)
+        </button>
+      </div>
+
+      <form onSubmit={submit} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <label htmlFor="link" style={{ fontSize: 14, fontWeight: 700 }}>
+          Link YouTube atau file
+        </label>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+          <input
+            id="link"
+            className="input"
+            style={{ flex: '1 1 280px' }}
+            type="url"
+            inputMode="url"
+            placeholder="https://youtu.be/… atau https://…/film.mp4"
+            value={link}
+            disabled={!isHost}
+            aria-invalid={error ? true : undefined}
+            aria-describedby="link-msg"
+            onChange={(e) => {
+              setLink(e.target.value);
+              setError('');
+            }}
+          />
+          <button type="submit" className="btn btn-primary" disabled={!isHost || busy}>
+            {busy ? 'Nyiapin…' : 'Putar buat semua'}
+          </button>
+        </div>
+        <div id="link-msg">
+          {error ? (
+            <span className="error-text" role="alert">
+              {error}
+            </span>
+          ) : (
+            !isHost && <span className="muted" style={{ fontSize: 14 }}>Cuma host yang bisa ganti video. Play, pause, dan loncat bisa siapa aja.</span>
+          )}
+        </div>
+      </form>
+    </section>
+  );
+}
+
+function People({ room, you, lag }: { room: RoomState; you: string; lag: Map<string, number> }) {
+  return (
+    <section className="card">
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8, marginBottom: 8 }}>
+        <h2 style={{ fontSize: 20 }}>Di room</h2>
+        <span className="muted" style={{ fontSize: 14 }}>
+          {room.members.length} orang
+        </span>
+      </div>
+      <ul className="people">
+        {room.members.map((m) => {
+          const behind = (lag.get(m.id) ?? 0) > LAG_SECONDS;
+          let status = 'Sinkron';
+          let color = 'var(--sync)';
+          let pulse = false;
+          if (m.buffering) {
+            status = 'Buffering';
+            color = 'var(--accent)';
+            pulse = true;
+          } else if (behind && room.media) {
+            status = 'Ngejar';
+            color = 'var(--accent)';
+            pulse = true;
+          }
+          const flagged = pulse;
+          return (
+            <li key={m.id} className={flagged ? 'person lagging' : 'person'}>
+              <span className="avatar" style={{ borderColor: flagged ? 'var(--accent)' : 'transparent' }}>
+                {initial(m.name)}
+              </span>
+              <div style={{ flex: '1 1 auto', minWidth: 0 }}>
+                <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', columnGap: 6, fontWeight: 500, overflowWrap: 'anywhere' }}>
+                  {m.name}
+                  {m.id === you && <span className="muted" style={{ whiteSpace: 'nowrap' }}>(kamu)</span>}
+                  {m.id === room.hostId && <span className="badge">Host</span>}
+                </div>
+                <div className="muted" style={{ fontSize: 14 }}>
+                  {m.device}
+                </div>
+              </div>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 14, fontWeight: 500, color }}>
+                <span className={pulse ? 'dot pulse' : 'dot'} style={{ background: color }} />
+                {status}
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
+function Chat({ room }: { room: RoomState }) {
+  const [draft, setDraft] = useState('');
+  const log = useRef<HTMLDivElement>(null);
+  const last = room.chat[room.chat.length - 1]?.id;
+
+  useEffect(() => {
+    const el = log.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [last]);
+
+  const send = (e: FormEvent) => {
+    e.preventDefault();
+    const text = draft.trim();
+    if (!text) return;
+    socket.emit('chat:send', { text });
+    setDraft('');
+  };
+
+  return (
+    <section className="card" style={{ display: 'flex', flexDirection: 'column', flex: '1 1 auto' }}>
+      <h2 style={{ fontSize: 20, marginBottom: 8 }}>Chat</h2>
+      <div ref={log} className="chat-log" role="log" aria-label="Pesan chat">
+        {room.chat.length === 0 && <p className="muted">Belum ada obrolan.</p>}
+        {room.chat.map((m) =>
+          m.system ? (
+            <div key={m.id} className="chat-sys">
+              {m.text}
+            </div>
+          ) : (
+            <div key={m.id} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              <span style={{ fontSize: 14, fontWeight: 700 }}>{m.from}</span>
+              <span style={{ overflowWrap: 'anywhere' }}>{m.text}</span>
+            </div>
+          ),
+        )}
+      </div>
+      <form onSubmit={send} style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+        <label htmlFor="chat" className="sr-only">
+          Tulis pesan
+        </label>
+        <input id="chat" className="input" style={{ minHeight: 44 }} maxLength={500} placeholder="Tulis pesan…" value={draft} onChange={(e) => setDraft(e.target.value)} />
+        <button type="submit" className="btn btn-primary">
+          Kirim
+        </button>
+      </form>
+    </section>
+  );
+}
+
+function LeaveDialog({ onCancel, onConfirm }: { onCancel(): void; onConfirm(): void }) {
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key === 'Escape') onCancel();
+  };
+  return (
+    <div className="scrim" onClick={onCancel}>
+      <div className="dialog" role="dialog" aria-modal="true" aria-labelledby="leave-title" onKeyDown={onKey} onClick={(e) => e.stopPropagation()}>
+        <h2 id="leave-title" style={{ fontSize: 22, marginBottom: 6 }}>
+          Keluar dari room?
+        </h2>
+        <p className="muted" style={{ margin: '0 0 20px' }}>
+          Temen-temen kamu tetap bisa lanjut nonton. Kamu bisa masuk lagi pakai kode yang sama.
+        </p>
+        <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 8 }}>
+          <button type="button" className="btn" autoFocus onClick={onCancel}>
+            Batal
+          </button>
+          <button type="button" className="btn btn-primary" onClick={onConfirm}>
+            Keluar room
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}

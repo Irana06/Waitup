@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">
+  <style>
+    .a{fill:#6A3FC8}.b{fill:#B8337F}
+    @media (prefers-color-scheme: dark){.a{fill:#B79CF5}.b{fill:#F58BC8}}
+  </style>
+  <g class="a">
+    <circle cx="5" cy="3.5" r="2.5"/>
+    <rect x="2.5" y="7" width="5" height="8" rx="2.5"/>
+  </g>
+  <g class="b">
+    <circle cx="11.5" cy="7" r="2.5"/>
+    <rect x="9" y="10.5" width="5" height="4.5" rx="2.25"/>
+  </g>
+</svg>

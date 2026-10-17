@@ -1,0 +1,12 @@
+{
+  "name": "Waitup",
+  "short_name": "Waitup",
+  "description": "Nobar dan dengerin lagu bareng. Kalau ada yang ngelag, semua nungguin.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#08121A",
+  "theme_color": "#08121A",
+  "icons": [
+    { "src": "/app-icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}
